@@ -2,14 +2,19 @@
 # Dataplat dev stack — 9 services.
 # Usage: docker compose -f docker/docker-compose.dev.yml up -d
 #
-# Port assignments (OQ-3, agreed.md §5):
-#   :5432  postgres
-#   :6379  redis
-#   :9000  minio S3 API
-#   :9001  minio console
-#   :3000  dagster-webserver  (Dagster GraphQL API + /dagster_version)  ← NOT frontend
-#   :8000  fastapi
-#   :5173  frontend nginx placeholder                                    ← NOT Dagster
+# Port assignments (HOST:CONTAINER):
+#   15432:5432  postgres            (host port 5432 is occupied by another dev stack)
+#   16379:6379  redis               (host port 6379 occupied)
+#   19000:9000  minio S3 API        (host port 9000 occupied)
+#   19001:9001  minio console       (host port 9001 occupied)
+#   13000:3000  dagster-webserver   (host port 3000 may be occupied)
+#   18000:8000  fastapi             (host port 8000 occupied)
+#   15173:80    frontend nginx      (host port 5173 occupied)
+#
+# Container-internal ports (right side of ":") remain as agreed.md §5 specifies —
+# all service-to-service traffic uses container ports unchanged. The +10000 host
+# offset was added during S001-F-001 verification because this developer machine
+# already runs several stacks on the standard ports.
 #
 # Worker containers (dagster-worker-cpu, dagster-worker-heavy) run
 # `sleep infinity` this sprint — they are structurally present to reserve
@@ -37,7 +42,7 @@ services:
       # init.sql runs as superuser on first boot; creates platform_dagster database
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-15432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app}"]
       interval: 5s
@@ -49,7 +54,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "${REDIS_HOST_PORT:-16379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -71,8 +76,8 @@ services:
     volumes:
       - minio_data:/data
     ports:
-      - "9000:9000"   # S3-compatible API
-      - "9001:9001"   # web console (V4)
+      - "${MINIO_API_HOST_PORT:-19000}:9000"   # S3-compatible API
+      - "${MINIO_CONSOLE_HOST_PORT:-19001}:9001"   # web console (V4)
     restart: unless-stopped
 
   # ── 4. Dagster webserver ──────────────────────────────────────────────────
@@ -89,14 +94,14 @@ services:
       POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
       POSTGRES_DB_DAGSTER: ${POSTGRES_DB_DAGSTER:-platform_dagster}
-    command: dagster-webserver -h 0.0.0.0 -p 3000
+    command: dagster-webserver -h 0.0.0.0 -p 3000 -w /app/dagster/workspace.yaml
     ports:
-      - "3000:3000"
+      - "${DAGSTER_HOST_PORT:-13000}:3000"
     depends_on:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/dagster_version > /dev/null || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:3000/dagster_version', timeout=3).status == 200 else 1)\""]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -115,7 +120,7 @@ services:
       POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
       POSTGRES_DB_DAGSTER: ${POSTGRES_DB_DAGSTER:-platform_dagster}
-    command: dagster-daemon run
+    command: dagster-daemon run -w /app/dagster/workspace.yaml
     depends_on:
       postgres:
         condition: service_healthy
@@ -187,12 +192,12 @@ services:
       # Bind mount for live reload — the image's COPY is the fallback at build time
       - ../apps/api:/app
     ports:
-      - "8000:8000"
+      - "${FASTAPI_HOST_PORT:-18000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:8000/healthz > /dev/null || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz', timeout=3).status == 200 else 1)\""]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -206,7 +211,7 @@ services:
     build:
       context: ./web
     ports:
-      - "5173:80"
+      - "${FRONTEND_HOST_PORT:-15173}:80"
     depends_on:
       fastapi:
         condition: service_healthy

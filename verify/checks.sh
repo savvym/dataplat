@@ -26,20 +26,37 @@ case "$LAYER" in
     COMPOSE_FILE="docker/docker-compose.dev.yml"
     [[ -f "$COMPOSE_FILE" ]] || { echo "no $COMPOSE_FILE yet"; exit 0; }
 
+    # Host ports (overridable via env; defaults match docker/.env.example).
+    # Container-internal ports unchanged from agreed.md §5.
+    FASTAPI_HOST_PORT="${FASTAPI_HOST_PORT:-18000}"
+    DAGSTER_HOST_PORT="${DAGSTER_HOST_PORT:-13000}"
+    MINIO_CONSOLE_HOST_PORT="${MINIO_CONSOLE_HOST_PORT:-19001}"
+    POSTGRES_HOST_PORT="${POSTGRES_HOST_PORT:-15432}"
+
     echo "--- infra: validate compose syntax ---"
     run "docker compose -f $COMPOSE_FILE config -q"
 
     echo "--- infra: check running services (stack must already be up) ---"
     # V2: FastAPI /healthz
-    run "curl -fsS http://localhost:8000/healthz | grep -q '\"ok\"'"
-    # V3: Dagster /dagster_version
-    run "curl -fsS http://localhost:3000/dagster_version | grep -q '1\\.'"
+    run "curl -fsS http://localhost:${FASTAPI_HOST_PORT}/healthz | grep -q '\"ok\"'"
+    # V3: Dagster /dagster_version returns 200 (spec literal).
+    # In Dagster 1.11+, /dagster_version returns the SPA shell with HTTP 200;
+    # the authoritative JSON version lives at /server_info. We assert 200 on
+    # /dagster_version (matches feature_list.json) AND the JSON shape on /server_info.
+    DAGV_STATUS=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${DAGSTER_HOST_PORT}/dagster_version")
+    [[ "$DAGV_STATUS" == "200" ]] || { echo "FAIL: /dagster_version returned $DAGV_STATUS"; exit 1; }
+    run "curl -fsS http://localhost:${DAGSTER_HOST_PORT}/server_info | grep -q '\"dagster_version\":\"1\\.'"
     # V4: MinIO console reachable
-    STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9001)
-    [[ "$STATUS" == "200" || "$STATUS" == "302" ]] || { echo "FAIL: MinIO console returned $STATUS"; exit 1; }
+    STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${MINIO_CONSOLE_HOST_PORT})
+    [[ "$STATUS" == "200" || "$STATUS" == "302" || "$STATUS" == "307" ]] || { echo "FAIL: MinIO console returned $STATUS"; exit 1; }
     echo "MinIO console: $STATUS — OK"
-    # V5: psql
-    run "PGPASSWORD=\${POSTGRES_PASSWORD:-devpassword} psql -h localhost -U \${POSTGRES_USER:-app} -d \${POSTGRES_DB:-platform} -c 'SELECT 1' -t | grep -q 1"
+    # V5: psql against both 'platform' and 'platform_dagster'.
+    # Uses docker exec because the host may not have a psql client installed
+    # (the postgres container ships one). Container-internal connection skips
+    # the host port and uses the in-network port 5432 directly.
+    POSTGRES_USER_DEFAULT="${POSTGRES_USER:-app}"
+    run "docker compose -f $COMPOSE_FILE exec -T postgres psql -U $POSTGRES_USER_DEFAULT -d ${POSTGRES_DB:-platform} -c 'SELECT 1' -t | grep -q 1"
+    run "docker compose -f $COMPOSE_FILE exec -T postgres psql -U $POSTGRES_USER_DEFAULT -d ${POSTGRES_DB_DAGSTER:-platform_dagster} -c 'SELECT 1' -t | grep -q 1"
     ;;
   smoke)
     if exists apps/api; then

@@ -93,3 +93,19 @@ Fix applied to `docker/dagster/Dockerfile` (no contract re-review — version pi
 
 V1 healthcheck and verify/checks.sh use a generic `1.` regex on the dagster_version response body so they are not affected. No other file edits required.
 
+## Addendum 2 — verifier-driven fixes (post-V1 run)
+
+Running V1 on the dev host surfaced four real issues that the contract-time review could not have caught (they only manifest at `docker compose up`). All were fixed inline:
+
+1. **Host port conflicts.** The dev host already runs several other stacks on standard ports (5432, 6379, 8000, 9000-9001, 5173). The compose file was updated to default all HOST ports to the +10000 range (15432, 16379, 18000, 19000-19001, 13000, 15173) with `${VAR:-default}` env var overrides. `docker/.env.example` has matching defaults. Container-internal ports are unchanged from agreed.md §5 — only host-side mappings moved.
+
+2. **`wget` is NOT in `python:3.12-slim`.** The Mode A reviewer asserted (iteration 3) that wget was available in both `nginx:1.27-alpine` and `python:3.12-slim`. The Alpine claim was correct; the Debian-slim claim was wrong. Healthchecks for `dagster-webserver` and `fastapi` now use `python -c "import urllib.request; ..."` — Python is guaranteed present in those images.
+
+3. **Dagster 1.11+ requires explicit `-w workspace.yaml`.** `dagster-webserver` and `dagster-daemon` commands were `... run` / `... -h 0.0.0.0 -p 3000` with no workspace argument; both crash-looped with `Error: No arguments given and no [tool.dagster] block in pyproject.toml found`. Added `-w /app/dagster/workspace.yaml` to both commands. DAGSTER_HOME alone does not satisfy these binaries.
+
+4. **`/dagster_version` returns SPA shell in Dagster 1.11+.** The feature_list.json verification ("returns 200") is still satisfied — the endpoint returns HTTP 200 — but the response body is the React SPA HTML, not a version string. The authoritative version JSON now lives at `/server_info` (`{"dagster_version":"1.11.16", ...}`). `verify/checks.sh` asserts 200 on `/dagster_version` AND the version JSON on `/server_info`. The compose healthcheck still hits `/dagster_version` because status-200 is the contract.
+
+5. **`psql` not on host.** `verify/checks.sh` V5 was updated to use `docker compose exec -T postgres psql ...` (postgres image ships psql) instead of a host `psql` invocation. Also asserts SELECT against both `platform` AND `platform_dagster` databases.
+
+All five F-001 verification bullets PASS (V1–V5) with the stack running on the +10000 host ports.
+

@@ -50,3 +50,4 @@ Deliberately left out of Phase 1 (per §12.1 + §1.3 + CLAUDE.md scope disciplin
 2026-05-22T03:01:14+08:00 | leader | Mode B blocker: dagster.yaml had dual storage config. Fixed inline (removed legacy run_storage/event_log_storage/schedule_storage blocks; kept unified storage:postgres:). Adding spec/ and contract artifacts that were missed from prior commits.
 2026-05-22T03:03:00+08:00 | leader | Mode B APPROVED at 6bc4cef; delegating to verifier
 2026-05-22T03:06:14+08:00 | leader | verifier V1 FAIL: dagster-postgres==1.9.10 doesn't exist on PyPI mirror (and dagster 1.7-1.10 also missing). Updated Dockerfile to dagster==1.11.16 / dagster-webserver==1.11.16 / dagster-postgres==0.27.16. Committing.
+2026-05-22T03:28:29+08:00 | leader | verifier PASS for F-001 (V1-V5 all green) after host-port remap, dagster -w flag, python urllib healthcheck, /server_info content check. Flipped F-001 passes:true. Closing sprint S001-F-001.

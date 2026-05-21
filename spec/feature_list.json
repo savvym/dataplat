@@ -13,7 +13,7 @@
       "psql -c 'SELECT 1' using configured credentials returns 1"
     ],
     "depends_on": [],
-    "passes": false
+    "passes": true
   },
   {
     "id": "F-002",
@@ -26,7 +26,9 @@
       "`\\dt` in psql lists all 8 expected tables",
       "Re-running migration is idempotent (exits 0, no duplicate table errors)"
     ],
-    "depends_on": ["F-001"],
+    "depends_on": [
+      "F-001"
+    ],
     "passes": false
   },
   {
@@ -39,7 +41,9 @@
       "After `docker compose up`, `mc ls` lists all 5 expected buckets",
       "Uploading a test file to `s3://sources/test.txt` via the MinIO SDK succeeds"
     ],
-    "depends_on": ["F-001"],
+    "depends_on": [
+      "F-001"
+    ],
     "passes": false
   },
   {
@@ -52,7 +56,9 @@
       "GET http://localhost:8000/api/admin/dagster-status returns 200 with {\"dagster_version\": \"...\"}",
       "Restarting only the fastapi container (dagster running) still returns 200"
     ],
-    "depends_on": ["F-001"],
+    "depends_on": [
+      "F-001"
+    ],
     "passes": false
   },
   {
@@ -65,7 +71,9 @@
       "Triggering the hello-world job via DagsterGateway returns a run_id",
       "Polling GET /api/runs/{run_id} returns {\"status\": \"success\"} within 60 seconds"
     ],
-    "depends_on": ["F-004"],
+    "depends_on": [
+      "F-004"
+    ],
     "passes": false
   },
   {
@@ -78,7 +86,12 @@
       "`bash verify/checks.sh smoke` exits 0",
       "The script checks: API health, DB connection, MinIO connectivity, Dagster connectivity"
     ],
-    "depends_on": ["F-001", "F-002", "F-003", "F-004"],
+    "depends_on": [
+      "F-001",
+      "F-002",
+      "F-003",
+      "F-004"
+    ],
     "passes": false
   },
   {
@@ -92,7 +105,9 @@
       "POST /api/auth/token with correct credentials returns 200 with {\"access_token\": \"...\", \"token_type\": \"bearer\"}",
       "POST /api/auth/token with wrong password returns 401"
     ],
-    "depends_on": ["F-002"],
+    "depends_on": [
+      "F-002"
+    ],
     "passes": false
   },
   {
@@ -106,7 +121,9 @@
       "GET /api/sources/collections with a valid token returns 200",
       "GET /api/sources/collections with an expired token returns 401"
     ],
-    "depends_on": ["F-007"],
+    "depends_on": [
+      "F-007"
+    ],
     "passes": false
   },
   {
@@ -120,7 +137,10 @@
       "Row exists in source_collection table with matching name",
       "POST with duplicate name returns 409"
     ],
-    "depends_on": ["F-002", "F-008"],
+    "depends_on": [
+      "F-002",
+      "F-008"
+    ],
     "passes": false
   },
   {
@@ -133,7 +153,9 @@
       "After creating 3 collections, GET /api/sources/collections returns {\"items\": [...], \"total\": 3}",
       "GET /api/sources/collections?limit=2 returns {\"items\": [<2 items>], \"total\": 3}"
     ],
-    "depends_on": ["F-009"],
+    "depends_on": [
+      "F-009"
+    ],
     "passes": false
   },
   {
@@ -148,7 +170,10 @@
       "The source row in Postgres has sha256 matching sha256sum of the uploaded file",
       "The source row has kind='file', mime_type='application/pdf'"
     ],
-    "depends_on": ["F-003", "F-009"],
+    "depends_on": [
+      "F-003",
+      "F-009"
+    ],
     "passes": false
   },
   {
@@ -162,7 +187,10 @@
       "The Dagster UI shows a materialization event for asset 'source' with the correct partition key",
       "GET /api/runs listing after upload shows a run record with kind='upload' (or the source appears in partition list)"
     ],
-    "depends_on": ["F-004", "F-011"],
+    "depends_on": [
+      "F-004",
+      "F-011"
+    ],
     "passes": false
   },
   {
@@ -175,7 +203,9 @@
       "GET /api/sources/{id} for an existing source returns 200 with all required fields populated",
       "GET /api/sources/99999 returns 404"
     ],
-    "depends_on": ["F-011"],
+    "depends_on": [
+      "F-011"
+    ],
     "passes": false
   },
   {
@@ -188,7 +218,9 @@
       "After uploading 3 PDFs to a collection, GET /api/sources/collections/{id}/sources returns {\"items\": [<3 items>], \"total\": 3}",
       "Each item includes id, original_name, storage_uri, sha256, uploaded_at"
     ],
-    "depends_on": ["F-011"],
+    "depends_on": [
+      "F-011"
+    ],
     "passes": false
   },
   {
@@ -201,7 +233,9 @@
       "After running the seed, SELECT * FROM operator WHERE name='mineru' returns 1 row with category='extractor', input_kind='source', output_kind='document'",
       "The config_schema column is valid JSON"
     ],
-    "depends_on": ["F-002"],
+    "depends_on": [
+      "F-002"
+    ],
     "passes": false
   },
   {
@@ -215,7 +249,10 @@
       "Each item includes id, name, version, category, config_schema",
       "GET /api/operators?category=tagger returns operators with category='tagger'"
     ],
-    "depends_on": ["F-015", "F-008"],
+    "depends_on": [
+      "F-015",
+      "F-008"
+    ],
     "passes": false
   },
   {
@@ -228,7 +265,9 @@
       "GET /api/operators/{mineru_id} returns 200 with all fields including config_schema as a valid JSON Schema object",
       "GET /api/operators/99999 returns 404"
     ],
-    "depends_on": ["F-016"],
+    "depends_on": [
+      "F-016"
+    ],
     "passes": false
   },
   {
@@ -242,7 +281,11 @@
       "A row exists in the run table with kind='extract', status='pending' or 'running'",
       "The Dagster UI shows a backfill launched for the 'extract_mineru' asset"
     ],
-    "depends_on": ["F-004", "F-012", "F-015"],
+    "depends_on": [
+      "F-004",
+      "F-012",
+      "F-015"
+    ],
     "passes": false
   },
   {
@@ -257,7 +300,9 @@
       "The document_variant row has is_canonical=true (first variant is auto-canonical)",
       "The document_variant row has a non-null dagster_run_id"
     ],
-    "depends_on": ["F-018"],
+    "depends_on": [
+      "F-018"
+    ],
     "passes": false
   },
   {
@@ -270,7 +315,9 @@
       "After a successful extraction, GET /api/sources/{id}/documents returns array with 1 item containing extractor_name, extractor_version, storage_prefix, is_canonical, materialized_at",
       "GET /api/sources/99999/documents returns 404"
     ],
-    "depends_on": ["F-019"],
+    "depends_on": [
+      "F-019"
+    ],
     "passes": false
   },
   {
@@ -284,7 +331,9 @@
       "SELECT * FROM document_variant WHERE source_id={id} AND is_canonical=true returns exactly 1 row with extractor_name='mineru'",
       "The unique partial index on is_canonical enforces the one-canonical constraint"
     ],
-    "depends_on": ["F-019"],
+    "depends_on": [
+      "F-019"
+    ],
     "passes": false
   },
   {
@@ -298,7 +347,9 @@
       "The rendered markdown contains text extracted from the source PDF",
       "GET /api/documents/99999/render returns 404"
     ],
-    "depends_on": ["F-019"],
+    "depends_on": [
+      "F-019"
+    ],
     "passes": false
   },
   {
@@ -311,7 +362,9 @@
       "After system startup and first chunking run, `lance.dataset('s3://lance/chunks/').schema` contains all required fields including chunk_id, source_id, text, token_count, attr_quality_score, attr_lang_code, attr_minhash_signature",
       "The table path is accessible via the MinIO SDK"
     ],
-    "depends_on": ["F-003"],
+    "depends_on": [
+      "F-003"
+    ],
     "passes": false
   },
   {
@@ -325,7 +378,9 @@
       "A run row is created with kind='chunk'",
       "Dagster shows a backfill for 'chunks' asset launched"
     ],
-    "depends_on": ["F-018"],
+    "depends_on": [
+      "F-018"
+    ],
     "passes": false
   },
   {
@@ -340,7 +395,11 @@
       "All attr_* columns are null on newly inserted rows",
       "producer_asset='chunks' on all rows for this source"
     ],
-    "depends_on": ["F-023", "F-024", "F-019"],
+    "depends_on": [
+      "F-023",
+      "F-024",
+      "F-019"
+    ],
     "passes": false
   },
   {
@@ -353,7 +412,9 @@
       "Run chunking on a source, then run it again; final Lance row count for that source equals the count from a single run (not doubled)",
       "No rows with duplicate chunk_id values exist in the table"
     ],
-    "depends_on": ["F-025"],
+    "depends_on": [
+      "F-025"
+    ],
     "passes": false
   },
   {
@@ -367,7 +428,9 @@
       "After run completes, SELECT attr_quality_score FROM lance_chunks WHERE source_id={id} returns non-null float values for all rows",
       "attr_quality_provider is set to the LLM model name used (e.g., 'gpt-4o-mini')"
     ],
-    "depends_on": ["F-025"],
+    "depends_on": [
+      "F-025"
+    ],
     "passes": false
   },
   {
@@ -382,7 +445,9 @@
       "The LLM call in the operator code uses ctx.llm.call() or equivalent gateway abstraction, not a direct SDK import",
       "Running the tagger a second time does not fail; it overwrites the column values"
     ],
-    "depends_on": ["F-027"],
+    "depends_on": [
+      "F-027"
+    ],
     "passes": false
   },
   {
@@ -396,7 +461,10 @@
       "attr_lang_confidence values are floats between 0 and 1",
       "No new rows inserted (column mode only)"
     ],
-    "depends_on": ["F-025", "F-002"],
+    "depends_on": [
+      "F-025",
+      "F-002"
+    ],
     "passes": false
   },
   {
@@ -410,7 +478,9 @@
       "attr_minhash_is_head is true for exactly one chunk per duplicate cluster",
       "No new rows inserted (column mode only)"
     ],
-    "depends_on": ["F-025"],
+    "depends_on": [
+      "F-025"
+    ],
     "passes": false
   },
   {
@@ -423,7 +493,10 @@
       "Run quality tagger, note attr_lang_code is null; run lang tagger; verify attr_quality_score is still set and attr_lang_code is now set",
       "The column merge uses merge_insert on chunk_id key, not a full row replacement"
     ],
-    "depends_on": ["F-028", "F-029"],
+    "depends_on": [
+      "F-028",
+      "F-029"
+    ],
     "passes": false
   },
   {
@@ -437,7 +510,10 @@
       "POST /api/chunks/query {\"filter\": \"attr_quality_score > 0.8\"} returns only chunks meeting the filter",
       "POST /api/chunks/query {\"filter\": \"1=0\"} returns {\"items\": [], \"total\": 0}"
     ],
-    "depends_on": ["F-025", "F-008"],
+    "depends_on": [
+      "F-025",
+      "F-008"
+    ],
     "passes": false
   },
   {
@@ -450,7 +526,9 @@
       "POST /api/chunks/aggregate {\"filter\": \"source_id = <id>\", \"group_by\": \"attr_lang_code\", \"metrics\": [\"count\"]} returns array like [{\"attr_lang_code\": \"zh\", \"count\": 42}, ...]",
       "Result is consistent with direct Lance count for the same filter"
     ],
-    "depends_on": ["F-032"],
+    "depends_on": [
+      "F-032"
+    ],
     "passes": false
   },
   {
@@ -463,7 +541,9 @@
       "POST /api/chunks/distribution {\"filter\": \"source_id=<id>\", \"column\": \"attr_quality_score\"} returns {\"buckets\": [{\"range\": [0,0.1], \"count\": ...}, ...], \"column\": \"attr_quality_score\"}",
       "POST /api/chunks/distribution {\"column\": \"attr_lang_code\"} returns categorical counts"
     ],
-    "depends_on": ["F-033"],
+    "depends_on": [
+      "F-033"
+    ],
     "passes": false
   },
   {
@@ -476,7 +556,9 @@
       "GET /api/chunks/{valid_chunk_id} returns 200 with all expected fields",
       "GET /api/chunks/nonexistent-id returns 404"
     ],
-    "depends_on": ["F-032"],
+    "depends_on": [
+      "F-032"
+    ],
     "passes": false
   },
   {
@@ -489,7 +571,10 @@
       "GET /api/chunks/{id}/lineage returns 200 with {\"chunk\": {...}, \"source\": {\"id\": ...}, \"document_variant\": {\"id\": ...}, \"lineage_chain\": [...]}",
       "For a non-augmented chunk, lineage_chain has 1 entry; for an augmented chunk it traces to the root original chunk"
     ],
-    "depends_on": ["F-035", "F-020"],
+    "depends_on": [
+      "F-035",
+      "F-020"
+    ],
     "passes": false
   },
   {
@@ -503,7 +588,10 @@
       "Row exists in recipe table",
       "POST with duplicate name returns 409"
     ],
-    "depends_on": ["F-002", "F-008"],
+    "depends_on": [
+      "F-002",
+      "F-008"
+    ],
     "passes": false
   },
   {
@@ -516,7 +604,9 @@
       "After creating 2 recipes, GET /api/recipes returns {\"items\": [<2 items>], \"total\": 2}",
       "Each item includes id, name, description, created_at, updated_at"
     ],
-    "depends_on": ["F-037"],
+    "depends_on": [
+      "F-037"
+    ],
     "passes": false
   },
   {
@@ -529,7 +619,9 @@
       "GET /api/recipes/{id} returns 200 with all fields including the definition object",
       "GET /api/recipes/99999 returns 404"
     ],
-    "depends_on": ["F-037"],
+    "depends_on": [
+      "F-037"
+    ],
     "passes": false
   },
   {
@@ -543,7 +635,9 @@
       "updated_at timestamp is newer than before the update",
       "After materializing a dataset from this recipe, PUT /api/recipes/{id} returns 422 or 409 with an appropriate error message"
     ],
-    "depends_on": ["F-037"],
+    "depends_on": [
+      "F-037"
+    ],
     "passes": false
   },
   {
@@ -557,7 +651,10 @@
       "For sft_synthesis_qa template, each sample has at minimum 'instruction' and 'output' fields",
       "Preview completes in under 30 seconds for 3 samples"
     ],
-    "depends_on": ["F-039", "F-032"],
+    "depends_on": [
+      "F-039",
+      "F-032"
+    ],
     "passes": false
   },
   {
@@ -571,7 +668,10 @@
       "A dataset row exists in Postgres with status='pending', recipe_snapshot containing the frozen recipe definition",
       "Dagster shows a backfill launched for the 'dataset' asset"
     ],
-    "depends_on": ["F-037", "F-004"],
+    "depends_on": [
+      "F-037",
+      "F-004"
+    ],
     "passes": false
   },
   {
@@ -587,7 +687,10 @@
       "The recipe_snapshot in recipe.json matches the recipe definition at time of materialization",
       "All LLM calls in the materializer use ctx.llm.call(), no direct SDK imports"
     ],
-    "depends_on": ["F-042", "F-032"],
+    "depends_on": [
+      "F-042",
+      "F-032"
+    ],
     "passes": false
   },
   {
@@ -601,7 +704,9 @@
       "s3://datasets/{dataset_id}_v{version}/dataset_infos.json exists and is valid JSON",
       "s3://datasets/{dataset_id}_v{version}/README.md exists and contains the dataset_card_md content"
     ],
-    "depends_on": ["F-043"],
+    "depends_on": [
+      "F-043"
+    ],
     "passes": false
   },
   {
@@ -614,7 +719,9 @@
       "After a successful materialization, GET /api/datasets returns array containing the new dataset with status='done'",
       "Each item includes id, recipe_id, version_tag, status, sample_count, size_bytes, materialized_at"
     ],
-    "depends_on": ["F-044"],
+    "depends_on": [
+      "F-044"
+    ],
     "passes": false
   },
   {
@@ -627,7 +734,9 @@
       "GET /api/datasets/{id} returns 200 with all fields including recipe_snapshot (the frozen recipe JSON), stats, and hf_repo_uri",
       "GET /api/datasets/99999 returns 404"
     ],
-    "depends_on": ["F-044"],
+    "depends_on": [
+      "F-044"
+    ],
     "passes": false
   },
   {
@@ -641,7 +750,9 @@
       "Downloading and extracting the result yields valid Parquet files loadable by pandas",
       "GET /api/datasets/99999/download returns 404"
     ],
-    "depends_on": ["F-044"],
+    "depends_on": [
+      "F-044"
+    ],
     "passes": false
   },
   {
@@ -654,7 +765,9 @@
       "GET /api/runs/{id} returns 200 with all expected fields",
       "GET /api/runs/99999 returns 404"
     ],
-    "depends_on": ["F-018"],
+    "depends_on": [
+      "F-018"
+    ],
     "passes": false
   },
   {
@@ -668,7 +781,9 @@
       "GET /api/runs?status=success returns only completed runs",
       "GET /api/runs?status=running returns only in-progress runs"
     ],
-    "depends_on": ["F-048"],
+    "depends_on": [
+      "F-048"
+    ],
     "passes": false
   },
   {
@@ -681,7 +796,10 @@
       "After a Dagster run completes, GET /api/runs/{id} shows status='success' or 'failed' (not permanently 'running')",
       "The run's ended_at timestamp is set after completion"
     ],
-    "depends_on": ["F-018", "F-004"],
+    "depends_on": [
+      "F-018",
+      "F-004"
+    ],
     "passes": false
   },
   {
@@ -695,7 +813,9 @@
       "Trigger a run; receive at minimum one {\"type\": \"run.status_changed\", \"run_id\": \"...\", \"to\": \"success\"} message within 2 minutes",
       "Disconnecting does not cause server errors"
     ],
-    "depends_on": ["F-050"],
+    "depends_on": [
+      "F-050"
+    ],
     "passes": false
   },
   {
@@ -709,7 +829,9 @@
       "Trigger an extraction run; receive a {\"type\": \"asset.materialized\", \"asset_key\": \"extract_mineru\", \"partition_key\": \"src_...\"} message",
       "Receive a {\"type\": \"chunks.added\", \"source_id\": <id>, \"count\": <N>} message after chunking completes"
     ],
-    "depends_on": ["F-051"],
+    "depends_on": [
+      "F-051"
+    ],
     "passes": false
   },
   {
@@ -723,7 +845,9 @@
       "Setting an invalid API key in env causes LLM calls to fail with a clear error (not an unhandled exception)",
       "No direct openai.ChatCompletion or anthropic.Anthropic() calls exist outside the gateway code path (grep check)"
     ],
-    "depends_on": ["F-005"],
+    "depends_on": [
+      "F-005"
+    ],
     "passes": false
   },
   {
@@ -737,7 +861,9 @@
       "If the MinIO write fails mid-way, no partial document_variant row is written to Postgres (or it is cleaned up)",
       "manifest.json contains source_refs and version info as described in §4.3"
     ],
-    "depends_on": ["F-019"],
+    "depends_on": [
+      "F-019"
+    ],
     "passes": false
   },
   {
@@ -751,7 +877,9 @@
       "Submitting valid credentials redirects to /",
       "Submitting invalid credentials shows 'Invalid credentials' error message without navigating away"
     ],
-    "depends_on": ["F-007"],
+    "depends_on": [
+      "F-007"
+    ],
     "passes": false
   },
   {
@@ -764,7 +892,9 @@
       "Navigating to /sources without a token redirects to /login",
       "After logout (clearing token), navigating to /datasets redirects to /login"
     ],
-    "depends_on": ["F-055"],
+    "depends_on": [
+      "F-055"
+    ],
     "passes": false
   },
   {
@@ -778,7 +908,11 @@
       "The source row displays original_name, size in human-readable format, and uploaded_at date",
       "Clicking the Upload button opens a file picker"
     ],
-    "depends_on": ["F-010", "F-014", "F-055"],
+    "depends_on": [
+      "F-010",
+      "F-014",
+      "F-055"
+    ],
     "passes": false
   },
   {
@@ -792,7 +926,10 @@
       "On success, the new source appears in the Sources list without a full page reload",
       "On upload failure, an error toast is shown"
     ],
-    "depends_on": ["F-011", "F-057"],
+    "depends_on": [
+      "F-011",
+      "F-057"
+    ],
     "passes": false
   },
   {
@@ -806,7 +943,12 @@
       "Clicking 'Trigger Extraction' sends POST /api/runs and shows a run status indicator",
       "After extraction completes, a document variant entry appears with a Preview button"
     ],
-    "depends_on": ["F-013", "F-020", "F-018", "F-057"],
+    "depends_on": [
+      "F-013",
+      "F-020",
+      "F-018",
+      "F-057"
+    ],
     "passes": false
   },
   {
@@ -820,7 +962,10 @@
       "Headings, paragraphs, and lists are formatted visually",
       "The rendered content is non-empty for a real PDF source"
     ],
-    "depends_on": ["F-022", "F-059"],
+    "depends_on": [
+      "F-022",
+      "F-059"
+    ],
     "passes": false
   },
   {
@@ -836,7 +981,11 @@
       "The count label shows 'N chunks match'",
       "Table supports at least 1000 rows visible without freezing (virtual scroll)"
     ],
-    "depends_on": ["F-032", "F-034", "F-055"],
+    "depends_on": [
+      "F-032",
+      "F-034",
+      "F-055"
+    ],
     "passes": false
   },
   {
@@ -850,7 +999,10 @@
       "source_refs shows at minimum page number",
       "A link or button navigates to the source document"
     ],
-    "depends_on": ["F-035", "F-061"],
+    "depends_on": [
+      "F-035",
+      "F-061"
+    ],
     "passes": false
   },
   {
@@ -864,7 +1016,10 @@
       "Each histogram/bar chart shows data consistent with the current filter",
       "Clicking a histogram bucket adds a filter pill to the active filters"
     ],
-    "depends_on": ["F-034", "F-061"],
+    "depends_on": [
+      "F-034",
+      "F-061"
+    ],
     "passes": false
   },
   {
@@ -878,7 +1033,12 @@
       "Selecting a tagger and clicking Run sends POST /api/runs and shows a toast with the run_id",
       "The toast updates to 'completed' when the WebSocket delivers a run.status_changed event"
     ],
-    "depends_on": ["F-016", "F-018", "F-051", "F-061"],
+    "depends_on": [
+      "F-016",
+      "F-018",
+      "F-051",
+      "F-061"
+    ],
     "passes": false
   },
   {
@@ -892,7 +1052,10 @@
       "Clicking Create New Recipe navigates to /recipes/new",
       "Each row has an Edit button that navigates to /recipes/{id}/edit"
     ],
-    "depends_on": ["F-038", "F-055"],
+    "depends_on": [
+      "F-038",
+      "F-055"
+    ],
     "passes": false
   },
   {
@@ -908,7 +1071,13 @@
       "Clicking Save sends the correct request and shows a success message",
       "After saving, GET /api/recipes/{id} returns the updated definition"
     ],
-    "depends_on": ["F-037", "F-040", "F-010", "F-016", "F-065"],
+    "depends_on": [
+      "F-037",
+      "F-040",
+      "F-010",
+      "F-016",
+      "F-065"
+    ],
     "passes": false
   },
   {
@@ -922,7 +1091,10 @@
       "Required fields are marked and form submission is blocked if they are empty",
       "Changing the template selection changes the form fields"
     ],
-    "depends_on": ["F-017", "F-066"],
+    "depends_on": [
+      "F-017",
+      "F-066"
+    ],
     "passes": false
   },
   {
@@ -936,7 +1108,9 @@
       "Adding a language filter produces valid SQL like \"attr_lang_code IN ('zh', 'en')\"",
       "The filter pill appears in the filter bar and can be removed"
     ],
-    "depends_on": ["F-066"],
+    "depends_on": [
+      "F-066"
+    ],
     "passes": false
   },
   {
@@ -950,7 +1124,11 @@
       "Clicking Download initiates a download of the Parquet files",
       "Pending/running datasets show a status badge without a download button"
     ],
-    "depends_on": ["F-045", "F-047", "F-055"],
+    "depends_on": [
+      "F-045",
+      "F-047",
+      "F-055"
+    ],
     "passes": false
   },
   {
@@ -964,7 +1142,10 @@
       "Stats section shows train/validation split sizes",
       "A file listing shows the Parquet files stored in MinIO"
     ],
-    "depends_on": ["F-046", "F-069"],
+    "depends_on": [
+      "F-046",
+      "F-069"
+    ],
     "passes": false
   },
   {
@@ -978,7 +1159,11 @@
       "When the WebSocket delivers a run.status_changed to='success' event, the status badge updates to 'Done'",
       "If materialization fails, the badge shows 'Failed'"
     ],
-    "depends_on": ["F-042", "F-051", "F-069"],
+    "depends_on": [
+      "F-042",
+      "F-051",
+      "F-069"
+    ],
     "passes": false
   },
   {
@@ -992,7 +1177,10 @@
       "Each row displays kind (extract/chunk/tag/materialize), status badge, and timestamps",
       "A 'View Logs' link opens the Dagster UI run page for that dagster_run_id in a new tab"
     ],
-    "depends_on": ["F-049", "F-055"],
+    "depends_on": [
+      "F-049",
+      "F-055"
+    ],
     "passes": false
   },
   {
@@ -1005,7 +1193,10 @@
       "With /runs open, trigger a new extraction; the new run appears in the list within 5 seconds without refreshing",
       "The status badge changes from 'running' to 'success' or 'failed' automatically when the run completes"
     ],
-    "depends_on": ["F-051", "F-072"],
+    "depends_on": [
+      "F-051",
+      "F-072"
+    ],
     "passes": false
   },
   {
@@ -1019,7 +1210,13 @@
       "The spec includes paths for /api/sources/upload, /api/chunks/query, /api/recipes, /api/datasets, /api/runs, /api/operators, /api/ws/runs",
       "All request/response schemas have types (no plain {})."
     ],
-    "depends_on": ["F-009", "F-032", "F-037", "F-042", "F-048"],
+    "depends_on": [
+      "F-009",
+      "F-032",
+      "F-037",
+      "F-042",
+      "F-048"
+    ],
     "passes": false
   },
   {
@@ -1034,7 +1231,9 @@
       "grep -r 'from.*api-types' apps/web/src/ returns results (frontend imports from the package)",
       "No raw fetch calls in apps/web/src use manually typed response shapes"
     ],
-    "depends_on": ["F-074"],
+    "depends_on": [
+      "F-074"
+    ],
     "passes": false
   },
   {
@@ -1048,7 +1247,9 @@
       "Running the full test suite does not produce 'greenlet_spawn' or 'sync session' warnings",
       "All async db operations complete under normal load without blocking the event loop"
     ],
-    "depends_on": ["F-002"],
+    "depends_on": [
+      "F-002"
+    ],
     "passes": false
   },
   {
@@ -1062,7 +1263,9 @@
       "MinIO contains only one copy of the file",
       "Uploading the same file to a different collection succeeds (dedup is per-collection)"
     ],
-    "depends_on": ["F-011"],
+    "depends_on": [
+      "F-011"
+    ],
     "passes": false
   },
   {
@@ -1075,7 +1278,9 @@
       "GET /api/runs/{id}/logs for a completed run returns 200 with log content or {\"dagster_ui_url\": \"http://...\"}",
       "GET /api/runs/99999/logs returns 404"
     ],
-    "depends_on": ["F-048"],
+    "depends_on": [
+      "F-048"
+    ],
     "passes": false
   },
   {
@@ -1089,7 +1294,10 @@
       "GET /api/operators?category=tagger subsequently includes the new operator",
       "POST /api/operators with duplicate name+version returns 409"
     ],
-    "depends_on": ["F-016", "F-008"],
+    "depends_on": [
+      "F-016",
+      "F-008"
+    ],
     "passes": false
   },
   {
@@ -1102,7 +1310,10 @@
       "Manually inserting a test file into MinIO without a DB record, then running the cleanup job, results in the file being deleted",
       "The cleanup job logs how many orphaned files were removed"
     ],
-    "depends_on": ["F-003", "F-005"],
+    "depends_on": [
+      "F-003",
+      "F-005"
+    ],
     "passes": false
   },
   {
@@ -1115,7 +1326,9 @@
       "After uploading a PDF, s3://sources/{source_id}/metadata.json exists in MinIO",
       "Its content parses as valid JSON with all required fields matching the source row"
     ],
-    "depends_on": ["F-011"],
+    "depends_on": [
+      "F-011"
+    ],
     "passes": false
   },
   {
@@ -1129,7 +1342,9 @@
       "POST /api/recipes with an invalid filter SQL string returns 422",
       "POST /api/recipes with a valid definition returns 201"
     ],
-    "depends_on": ["F-037"],
+    "depends_on": [
+      "F-037"
+    ],
     "passes": false
   },
   {
@@ -1143,7 +1358,10 @@
       "The recipe_snapshot on the v1 dataset still contains the original recipe definition, not the updated one",
       "GET /api/datasets/{v1_id} returns the original recipe_snapshot"
     ],
-    "depends_on": ["F-042", "F-040"],
+    "depends_on": [
+      "F-042",
+      "F-040"
+    ],
     "passes": false
   },
   {
@@ -1157,7 +1375,9 @@
       "Starting the stack with missing required env vars causes a clear startup error (not a runtime exception on first request)",
       "All configurable values are documented in docker/docker-compose.dev.yml or a .env.example file"
     ],
-    "depends_on": ["F-001"],
+    "depends_on": [
+      "F-001"
+    ],
     "passes": false
   },
   {
@@ -1170,7 +1390,9 @@
       "GET /api/sources/99999 returns {\"detail\": \"Source not found\", \"code\": \"not_found\"}",
       "An intentionally triggered 500 in a test route returns {\"detail\": \"Internal server error\"} without a Python traceback in the body"
     ],
-    "depends_on": ["F-001"],
+    "depends_on": [
+      "F-001"
+    ],
     "passes": false
   },
   {
@@ -1183,7 +1405,11 @@
       "`bash verify/checks.sh api` exits 0 after a clean stack startup",
       "The script creates a collection, uploads a test PDF, and queries GET /api/sources/collections"
     ],
-    "depends_on": ["F-006", "F-011", "F-009"],
+    "depends_on": [
+      "F-006",
+      "F-011",
+      "F-009"
+    ],
     "passes": false
   },
   {
@@ -1196,7 +1422,10 @@
       "`bash verify/checks.sh pipeline` exits 0",
       "The check confirms chunk rows exist in Lance for the test source after the pipeline completes"
     ],
-    "depends_on": ["F-025", "F-086"],
+    "depends_on": [
+      "F-025",
+      "F-086"
+    ],
     "passes": false
   },
   {
@@ -1209,7 +1438,9 @@
       "Uploading a file > 500 MB returns 413 with {\"detail\": \"File too large\"}",
       "No partial file is written to MinIO for the rejected upload"
     ],
-    "depends_on": ["F-011"],
+    "depends_on": [
+      "F-011"
+    ],
     "passes": false
   },
   {
@@ -1223,7 +1454,9 @@
       "Uploading a .docx file returns 422",
       "Uploading a valid .pdf file returns 201"
     ],
-    "depends_on": ["F-011"],
+    "depends_on": [
+      "F-011"
+    ],
     "passes": false
   },
   {
@@ -1237,7 +1470,9 @@
       "Running business migrations does not touch the dagster schema",
       "Dagster webserver starts without errors when the dagster schema is initialized"
     ],
-    "depends_on": ["F-002"],
+    "depends_on": [
+      "F-002"
+    ],
     "passes": false
   },
   {
@@ -1251,7 +1486,9 @@
       "Each operator's config_schema is a valid JSON Schema document",
       "Each operator's output_schema lists the Lance columns it will write"
     ],
-    "depends_on": ["F-015"],
+    "depends_on": [
+      "F-015"
+    ],
     "passes": false
   },
   {
@@ -1264,7 +1501,9 @@
       "SELECT name FROM operator WHERE category='materializer' AND name='sft_synthesis_qa' returns 1 row",
       "config_schema includes 'synthesizer_model' as an enum and 'prompt_template' as a required string"
     ],
-    "depends_on": ["F-015"],
+    "depends_on": [
+      "F-015"
+    ],
     "passes": false
   },
   {
@@ -1277,7 +1516,10 @@
       "After inserting a new test tagger operator row and calling the Dagster code location reload endpoint, GET /api/operators?category=tagger returns the new operator AND the Dagster UI shows a corresponding attr_* asset",
       "Removing an operator (is_active=false) and reloading removes the asset from Dagster UI"
     ],
-    "depends_on": ["F-091", "F-005"],
+    "depends_on": [
+      "F-091",
+      "F-005"
+    ],
     "passes": false
   },
   {
@@ -1291,7 +1533,9 @@
       "Triggering a 404 produces a log line with level='warning' and the request path",
       "An intentional error produces a log with level='error' and exception details"
     ],
-    "depends_on": ["F-001"],
+    "depends_on": [
+      "F-001"
+    ],
     "passes": false
   },
   {
@@ -1306,7 +1550,9 @@
       "The MinIO object no longer exists",
       "SELECT * FROM document_variant WHERE source_id={id} returns 0 rows (cascade)"
     ],
-    "depends_on": ["F-011"],
+    "depends_on": [
+      "F-011"
+    ],
     "passes": false
   },
   {
@@ -1320,7 +1566,10 @@
       "All source and document_variant rows for the collection are removed",
       "Attempting to delete a collection with an active dataset materialization returns 409"
     ],
-    "depends_on": ["F-009", "F-095"],
+    "depends_on": [
+      "F-009",
+      "F-095"
+    ],
     "passes": false
   },
   {
@@ -1334,7 +1583,12 @@
       "Recent runs section shows the 5 most recent run records with status badges",
       "Numbers are consistent with API responses from GET /api/sources/collections, GET /api/chunks/aggregate, and GET /api/datasets"
     ],
-    "depends_on": ["F-010", "F-033", "F-045", "F-055"],
+    "depends_on": [
+      "F-010",
+      "F-033",
+      "F-045",
+      "F-055"
+    ],
     "passes": false
   },
   {
@@ -1348,7 +1602,13 @@
       "The downloaded Parquet file is valid and contains at least 1 row",
       "No error-level log messages appear in any service during the run"
     ],
-    "depends_on": ["F-047", "F-028", "F-029", "F-043", "F-087"],
+    "depends_on": [
+      "F-047",
+      "F-028",
+      "F-029",
+      "F-043",
+      "F-087"
+    ],
     "passes": false
   },
   {
@@ -1361,7 +1621,9 @@
       "After running a translate augmenter, new rows exist with augmented_from pointing to original chunk_ids",
       "All attr_* columns on augmented rows are null"
     ],
-    "depends_on": ["F-026"],
+    "depends_on": [
+      "F-026"
+    ],
     "passes": false
   },
   {
@@ -1374,7 +1636,9 @@
       "Uploading a .docx file and triggering extract_docling produces a document_variant with extractor_name='docling'",
       "The resulting doc.docling.json is valid"
     ],
-    "depends_on": ["F-019"],
+    "depends_on": [
+      "F-019"
+    ],
     "passes": false
   },
   {
@@ -1387,7 +1651,9 @@
       "Uploading a URL source and triggering extract_firecrawl produces a valid document_variant",
       "The document contains extracted text from the URL"
     ],
-    "depends_on": ["F-019"],
+    "depends_on": [
+      "F-019"
+    ],
     "passes": false
   },
   {
@@ -1400,7 +1666,9 @@
       "After running document_vlm_enriched, the enriched document JSON contains non-empty image description fields",
       "The VLM call uses ctx.llm.call()"
     ],
-    "depends_on": ["F-053"],
+    "depends_on": [
+      "F-053"
+    ],
     "passes": false
   },
   {
@@ -1413,7 +1681,9 @@
       "Navigating to /lineage?source_id={id} renders a graph with at least 4 connected nodes",
       "Clicking a node shows metadata about that asset"
     ],
-    "depends_on": ["F-036"],
+    "depends_on": [
+      "F-036"
+    ],
     "passes": false
   },
   {
@@ -1426,7 +1696,9 @@
       "Toggling to YAML mode renders the recipe definition as YAML in a monaco editor",
       "Editing the YAML and toggling back to visual mode reflects the changes"
     ],
-    "depends_on": ["F-066"],
+    "depends_on": [
+      "F-066"
+    ],
     "passes": false
   },
   {
@@ -1439,7 +1711,9 @@
       "A recipe with per_source_caps: {1: 100} produces a dataset where at most 100 samples come from collection 1",
       "stratified strategy produces proportional representation of sources"
     ],
-    "depends_on": ["F-043"],
+    "depends_on": [
+      "F-043"
+    ],
     "passes": false
   }
 ]
