@@ -1,0 +1,10 @@
+# dagster/workspace.yaml
+# Declares a single in-process code location pointing at dagster_platform.definitions.
+# No grpc_server entries — migration to gRPC deferred to the sprint that adds
+# real assets (F-005). See agreed.md §8 OQ-2 for the migration checklist.
+#
+# DAGSTER_HOME=/app/dagster (set in Dockerfile) tells Dagster to load this file.
+# PYTHONPATH=/app/dagster (set in Dockerfile) makes dagster_platform importable.
+
+load_from:
+  - python_module: dagster_platform.definitions

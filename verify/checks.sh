@@ -21,6 +21,26 @@ run() { echo "▶ $*"; eval "$*"; }
 exists() { [[ -d "$1" ]]; }
 
 case "$LAYER" in
+  infra)
+    # F-001: docker-compose dev stack syntax + service health checks
+    COMPOSE_FILE="docker/docker-compose.dev.yml"
+    [[ -f "$COMPOSE_FILE" ]] || { echo "no $COMPOSE_FILE yet"; exit 0; }
+
+    echo "--- infra: validate compose syntax ---"
+    run "docker compose -f $COMPOSE_FILE config -q"
+
+    echo "--- infra: check running services (stack must already be up) ---"
+    # V2: FastAPI /healthz
+    run "curl -fsS http://localhost:8000/healthz | grep -q '\"ok\"'"
+    # V3: Dagster /dagster_version
+    run "curl -fsS http://localhost:3000/dagster_version | grep -q '1\\.'"
+    # V4: MinIO console reachable
+    STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9001)
+    [[ "$STATUS" == "200" || "$STATUS" == "302" ]] || { echo "FAIL: MinIO console returned $STATUS"; exit 1; }
+    echo "MinIO console: $STATUS — OK"
+    # V5: psql
+    run "PGPASSWORD=\${POSTGRES_PASSWORD:-devpassword} psql -h localhost -U \${POSTGRES_USER:-app} -d \${POSTGRES_DB:-platform} -c 'SELECT 1' -t | grep -q 1"
+    ;;
   smoke)
     if exists apps/api; then
       run "cd apps/api && uv run pytest -q -k smoke || true"
@@ -59,6 +79,7 @@ case "$LAYER" in
     run "cd plugins/$PLUGIN_NAME && uv run ruff check ."
     ;;
   all)
+    bash "$0" infra
     bash "$0" backend
     bash "$0" frontend
     bash "$0" contract

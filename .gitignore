@@ -1,0 +1,43 @@
+# Secrets — never commit
+.env
+docker/.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+.eggs/
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+dist/
+.turbo/
+
+# uv
+.uv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artefacts
+.coverage
+htmlcov/
+.pytest_cache/
+junit*.xml
+
+# Build artefacts
+*.log

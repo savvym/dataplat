@@ -2,3 +2,47 @@
 # Format: <ISO timestamp> | <session id or "bootstrap"> | <entry>
 
 2026-05-21T18:03:07Z | bootstrap | harness skeleton created from HARNESS-BOOTSTRAP.md; spec/ and contracts/ still empty; next step is /plan
+2026-05-22T02:07:59+08:00 — delegating to planner sub-agent: generate spec/ artifacts from docs/data_platform_design.md (one-time /init-spec)
+2026-05-22T02:30:00+08:00 | planner | spec/ artifacts generated from docs/data_platform_design.md; 105 features total (98 Phase 1, 7 Phase 2); breakdown: infra=20, core=27, api=14, plugin=7, web=18, auth=2, other=0 (see closing summary below)
+
+--- PLANNER CLOSING SUMMARY ---
+Total features: 105
+Phase 1 (MVP): 98 features
+Phase 2 (Post-MVP): 7 features (F-099 through F-105)
+
+Phase 1 breakdown by category:
+  infra:  20 features  (F-001..F-006, F-050..F-054, F-076..F-077, F-080..F-081, F-084..F-087, F-090, F-094, F-098)
+  core:   27 features  (F-009..F-015, F-018, F-021, F-023..F-027, F-031, F-037..F-040, F-042, F-044, F-077, F-082..F-083, F-088..F-089, F-091..F-093, F-095..F-096)
+  api:    13 features  (F-016..F-017, F-022, F-032..F-036, F-047..F-049, F-074..F-075, F-078..F-079)
+  plugin:  6 features  (F-019, F-025, F-028..F-030, F-043, F-092)
+  web:    18 features  (F-055..F-073, F-097)
+  auth:    2 features  (F-007..F-008)
+
+Priority breakdown (Phase 1 only):
+  P0: 27 features
+  P1: 71 features
+
+Deliberately left out of Phase 1 (per §12.1 + §1.3 + CLAUDE.md scope discipline):
+  - Augmenter operators (F-099, Phase 2)
+  - Additional extractors: Docling, Firecrawl, md-passthrough (F-100, F-101, Phase 2)
+  - VLM enrichment (F-102, Phase 2)
+  - Lineage UI page (F-103, Phase 2)
+  - Recipe raw YAML editor mode (F-104, Phase 2)
+  - Advanced sampling strategies (F-105, Phase 2)
+  - Self-registration, MFA, OAuth, social login
+  - Repository-level granular ACL
+  - HuggingFace Hub export
+  - Dataset diff UI
+  - Argilla integration
+  - Operator marketplace (pull from GitHub)
+  - Experiment tracking, Kafka streams, training frameworks
+  - Docker-in-Docker plugin sandbox
+  - Celery/Dagster celery executor (MVP uses multiprocess)
+2026-05-22T02:16:43+08:00 | leader | starting sprint S001-F-001; reason: working on F-001 (docker-compose dev stack — only unblocked P0; gates all other infra)
+2026-05-22T02:16:56+08:00 | leader | delegating to implementer: draft contracts/S001-F-001/proposed.md (F-001 is infra, not plugin)
+2026-05-22T02:26:53+08:00 | leader | delegating to reviewer (Mode A): review contracts/S001-F-001/proposed.md against spec/ and F-001 verification list
+2026-05-22T02:30:57+08:00 | leader | reviewer Mode A: CHANGES_REQUESTED (7 issues); relaying back to implementer (iteration 2)
+2026-05-22T02:35:43+08:00 | leader | delegating to reviewer Mode A iteration 2 (after all 7 issues addressed)
+2026-05-22T02:42:36+08:00 | leader | Mode A iter 3: CHANGES_REQUESTED (curl missing in alpine/slim images). Issue is small (wget substitution). User authorized autonomous completion ("you finish s001-f001 all") — proceeding to iter 4 to converge. If iter 4 still fails, will halt and notify.
+2026-05-22T02:49:25+08:00 | leader | Mode A APPROVED at iter 5; copied proposed.md → agreed.md; delegating implementation
+2026-05-22T03:00:00+08:00 | implementer | S001-F-001 implementation: created 17 files (docker-compose stack, Dockerfiles, Dagster config, FastAPI skeleton, nginx placeholder). compose config -q exits 0. No deviations from agreed.md. MinIO image RELEASE.2025-04-22T22-12-26Z used as pinned (no substitution needed). DAGSTER_HOME and PYTHONPATH both set in Dagster Dockerfile. All healthchecks use wget. verify/checks.sh infra layer added.

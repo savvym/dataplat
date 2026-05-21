@@ -1,0 +1,68 @@
+# dagster/dagster.yaml
+# Dagster instance configuration.
+# DAGSTER_HOME=/app/dagster (set in Dockerfile) causes Dagster to load this file.
+#
+# Storage backend: Postgres, 'platform_dagster' database.
+# Credentials are injected from environment variables (set via compose env_file).
+# The 'platform_dagster' database is created by docker/postgres/init.sql on first boot.
+#
+# Variable reference format: Dagster supports ${VAR} interpolation in dagster.yaml
+# for string fields, and the env: key for password fields.
+
+storage:
+  postgres:
+    postgres_db:
+      username:
+        env: POSTGRES_USER
+      password:
+        env: POSTGRES_PASSWORD
+      hostname:
+        env: POSTGRES_HOST
+      db_name:
+        env: POSTGRES_DB_DAGSTER
+      port: 5432
+
+run_storage:
+  module: dagster_postgres.run_storage
+  class: PostgresRunStorage
+  config:
+    postgres_db:
+      username:
+        env: POSTGRES_USER
+      password:
+        env: POSTGRES_PASSWORD
+      hostname:
+        env: POSTGRES_HOST
+      db_name:
+        env: POSTGRES_DB_DAGSTER
+      port: 5432
+
+event_log_storage:
+  module: dagster_postgres.event_log
+  class: PostgresEventLogStorage
+  config:
+    postgres_db:
+      username:
+        env: POSTGRES_USER
+      password:
+        env: POSTGRES_PASSWORD
+      hostname:
+        env: POSTGRES_HOST
+      db_name:
+        env: POSTGRES_DB_DAGSTER
+      port: 5432
+
+schedule_storage:
+  module: dagster_postgres.schedule_storage
+  class: PostgresScheduleStorage
+  config:
+    postgres_db:
+      username:
+        env: POSTGRES_USER
+      password:
+        env: POSTGRES_PASSWORD
+      hostname:
+        env: POSTGRES_HOST
+      db_name:
+        env: POSTGRES_DB_DAGSTER
+      port: 5432

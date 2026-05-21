@@ -1,0 +1,223 @@
+# docker/docker-compose.dev.yml
+# Dataplat dev stack — 9 services.
+# Usage: docker compose -f docker/docker-compose.dev.yml up -d
+#
+# Port assignments (OQ-3, agreed.md §5):
+#   :5432  postgres
+#   :6379  redis
+#   :9000  minio S3 API
+#   :9001  minio console
+#   :3000  dagster-webserver  (Dagster GraphQL API + /dagster_version)  ← NOT frontend
+#   :8000  fastapi
+#   :5173  frontend nginx placeholder                                    ← NOT Dagster
+#
+# Worker containers (dagster-worker-cpu, dagster-worker-heavy) run
+# `sleep infinity` this sprint — they are structurally present to reserve
+# service names but serve no gRPC code location yet.
+# Migration to `dagster api grpc` is tracked in the F-005 sprint contract.
+
+name: dataplat
+
+# env_file is loaded for every service that doesn't override it.
+# Running with .env.example directly (without copying to .env) gives a
+# working dev stack with safe default credentials.
+
+services:
+
+  # ── 1. Postgres ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16
+    env_file: .env.example
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-platform}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      # init.sql runs as superuser on first boot; creates platform_dagster database
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── 2. Redis ─────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── 3. MinIO ─────────────────────────────────────────────────────────────
+  # No compose healthcheck — the minio image does not ship wget or curl.
+  # MinIO liveness is verified externally by the verifier (V4: curl localhost:9001).
+  # A proper healthcheck using `mc ready` is added in F-003.
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    env_file: .env.example
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-devpassword}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"   # S3-compatible API
+      - "9001:9001"   # web console (V4)
+    restart: unless-stopped
+
+  # ── 4. Dagster webserver ──────────────────────────────────────────────────
+  # Port :3000 = Dagster webserver (GraphQL API + /dagster_version).
+  # NOT the frontend — frontend is on :5173.
+  dagster-webserver:
+    build:
+      context: ..
+      dockerfile: docker/dagster/Dockerfile
+    env_file: .env.example
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB_DAGSTER: ${POSTGRES_DB_DAGSTER:-platform_dagster}
+    command: dagster-webserver -h 0.0.0.0 -p 3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/dagster_version > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── 5. Dagster daemon ─────────────────────────────────────────────────────
+  dagster-daemon:
+    build:
+      context: ..
+      dockerfile: docker/dagster/Dockerfile
+    env_file: .env.example
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB_DAGSTER: ${POSTGRES_DB_DAGSTER:-platform_dagster}
+    command: dagster-daemon run
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dagster-webserver:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── 6. Dagster worker — CPU ───────────────────────────────────────────────
+  # Uses `sleep infinity` this sprint (no real gRPC code location yet).
+  # Port 4000 is RESERVED for F-005 (dagster api grpc -p 4000).
+  # See agreed.md §8 OQ-2 for the migration checklist.
+  dagster-worker-cpu:
+    build:
+      context: ..
+      dockerfile: docker/dagster/Dockerfile
+    env_file: .env.example
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB_DAGSTER: ${POSTGRES_DB_DAGSTER:-platform_dagster}
+      WORKER_PROFILE: cpu
+    command: sleep infinity
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dagster-webserver:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── 7. Dagster worker — Heavy ─────────────────────────────────────────────
+  # Uses `sleep infinity` this sprint (no real gRPC code location yet).
+  # Port 4001 is RESERVED for F-005 (dagster api grpc -p 4001).
+  dagster-worker-heavy:
+    build:
+      context: ..
+      dockerfile: docker/dagster/Dockerfile
+    env_file: .env.example
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB_DAGSTER: ${POSTGRES_DB_DAGSTER:-platform_dagster}
+      WORKER_PROFILE: heavy
+    command: sleep infinity
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dagster-webserver:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── 8. FastAPI ────────────────────────────────────────────────────────────
+  # Does NOT depend on dagster-webserver this sprint (DagsterGateway is F-004).
+  # Bind-mounts apps/api/ for live --reload during development.
+  fastapi:
+    build:
+      context: ..
+      dockerfile: docker/api/Dockerfile
+    env_file: .env.example
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-devpassword}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-platform}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      DAGSTER_GRAPHQL: ${DAGSTER_GRAPHQL:-http://dagster-webserver:3000/graphql}
+    command: uvicorn dataplat_api.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      # Bind mount for live reload — the image's COPY is the fallback at build time
+      - ../apps/api:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8000/healthz > /dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── 9. Frontend ───────────────────────────────────────────────────────────
+  # Port :5173 = frontend placeholder (nginx:1.27-alpine serving static HTML).
+  # NOT Dagster — Dagster is on :3000.
+  # Real frontend (React/Vite) is implemented in F-055.
+  frontend:
+    build:
+      context: ./web
+    ports:
+      - "5173:80"
+    depends_on:
+      fastapi:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost/ > /dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+volumes:
+  pg_data:
+  minio_data:

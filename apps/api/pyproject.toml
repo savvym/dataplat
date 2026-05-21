@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dataplat-api"
+version = "0.1.0"
+description = "Dataplat FastAPI backend"
+requires-python = ">=3.12"
+dependencies = [
+    # Pinned per contracts/S001-F-001/agreed.md §8a
+    "fastapi==0.115.12",
+    "uvicorn[standard]==0.34.2",
+    # Declared now so F-002+ can use async DB without changing pyproject.toml
+    "sqlalchemy[asyncio]==2.0.41",
+    "asyncpg==0.30.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["dataplat_api"]
