@@ -1,0 +1,1445 @@
+[
+  {
+    "id": "F-001",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P0",
+    "description": "docker-compose dev stack (postgres, redis, minio, fastapi, dagster-webserver, dagster-daemon, dagster-worker-cpu, dagster-worker-heavy, frontend) starts cleanly with a single command and all health checks pass",
+    "verification": [
+      "Run `docker compose -f docker/docker-compose.dev.yml up -d` exits 0",
+      "GET http://localhost:8000/healthz returns 200 with {\"status\":\"ok\"}",
+      "GET http://localhost:3000/dagster_version returns 200",
+      "MinIO console is reachable at http://localhost:9001",
+      "psql -c 'SELECT 1' using configured credentials returns 1"
+    ],
+    "depends_on": [],
+    "passes": false
+  },
+  {
+    "id": "F-002",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Postgres baseline migration runs cleanly, creating all business tables defined in §4.1 (users, source_collection, source, document_variant, operator, recipe, dataset, run)",
+    "verification": [
+      "Running the migration command exits 0 with no errors",
+      "`\\dt` in psql lists all 8 expected tables",
+      "Re-running migration is idempotent (exits 0, no duplicate table errors)"
+    ],
+    "depends_on": ["F-001"],
+    "passes": false
+  },
+  {
+    "id": "F-003",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P0",
+    "description": "MinIO buckets (sources, documents, documents_vlm, lance, datasets) are created automatically on first startup via an init container or startup script",
+    "verification": [
+      "After `docker compose up`, `mc ls` lists all 5 expected buckets",
+      "Uploading a test file to `s3://sources/test.txt` via the MinIO SDK succeeds"
+    ],
+    "depends_on": ["F-001"],
+    "passes": false
+  },
+  {
+    "id": "F-004",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P0",
+    "description": "FastAPI can reach Dagster GraphQL endpoint and the DagsterGateway abstraction returns the Dagster version without error",
+    "verification": [
+      "GET http://localhost:8000/api/admin/dagster-status returns 200 with {\"dagster_version\": \"...\"}",
+      "Restarting only the fastapi container (dagster running) still returns 200"
+    ],
+    "depends_on": ["F-001"],
+    "passes": false
+  },
+  {
+    "id": "F-005",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Dagster can run a hello-world job with a single op that logs a message, and the run completes with status SUCCESS",
+    "verification": [
+      "Triggering the hello-world job via DagsterGateway returns a run_id",
+      "Polling GET /api/runs/{run_id} returns {\"status\": \"success\"} within 60 seconds"
+    ],
+    "depends_on": ["F-004"],
+    "passes": false
+  },
+  {
+    "id": "F-006",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P1",
+    "description": "verify/checks.sh smoke script runs all baseline checks and exits 0 on a clean install",
+    "verification": [
+      "`bash verify/checks.sh smoke` exits 0",
+      "The script checks: API health, DB connection, MinIO connectivity, Dagster connectivity"
+    ],
+    "depends_on": ["F-001", "F-002", "F-003", "F-004"],
+    "passes": false
+  },
+  {
+    "id": "F-007",
+    "category": "auth",
+    "phase": 1,
+    "priority": "P1",
+    "description": "A single admin user record can be seeded into the users table via a one-time setup command; the user can obtain a JWT token via POST /api/auth/token",
+    "verification": [
+      "Running the seed command creates exactly one row in the users table",
+      "POST /api/auth/token with correct credentials returns 200 with {\"access_token\": \"...\", \"token_type\": \"bearer\"}",
+      "POST /api/auth/token with wrong password returns 401"
+    ],
+    "depends_on": ["F-002"],
+    "passes": false
+  },
+  {
+    "id": "F-008",
+    "category": "auth",
+    "phase": 1,
+    "priority": "P1",
+    "description": "All non-public API routes require a valid JWT Bearer token; requests without a token receive 401",
+    "verification": [
+      "GET /api/sources/collections without Authorization header returns 401",
+      "GET /api/sources/collections with a valid token returns 200",
+      "GET /api/sources/collections with an expired token returns 401"
+    ],
+    "depends_on": ["F-007"],
+    "passes": false
+  },
+  {
+    "id": "F-009",
+    "category": "core",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Create a source collection: POST /api/sources/collections creates a new source_collection row in Postgres and returns the new record",
+    "verification": [
+      "POST /api/sources/collections {\"name\": \"test-coll\", \"dataset_card_md\": \"desc\"} returns 201 with {\"id\": <int>, \"name\": \"test-coll\"}",
+      "Row exists in source_collection table with matching name",
+      "POST with duplicate name returns 409"
+    ],
+    "depends_on": ["F-002", "F-008"],
+    "passes": false
+  },
+  {
+    "id": "F-010",
+    "category": "core",
+    "phase": 1,
+    "priority": "P0",
+    "description": "List source collections: GET /api/sources/collections returns a paginated list of all collections owned by the authenticated user",
+    "verification": [
+      "After creating 3 collections, GET /api/sources/collections returns {\"items\": [...], \"total\": 3}",
+      "GET /api/sources/collections?limit=2 returns {\"items\": [<2 items>], \"total\": 3}"
+    ],
+    "depends_on": ["F-009"],
+    "passes": false
+  },
+  {
+    "id": "F-011",
+    "category": "core",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Upload a PDF source: POST /api/sources/upload stores the file in MinIO at s3://sources/{source_id}/original.pdf, writes a source row to Postgres with correct sha256 and storage_uri, and returns source_id",
+    "verification": [
+      "POST /api/sources/upload with a valid PDF file and collection_id returns 201 with {\"id\": <int>, \"storage_uri\": \"s3://sources/<id>/original.pdf\"}",
+      "The file exists in MinIO at the returned storage_uri path",
+      "The source row in Postgres has sha256 matching sha256sum of the uploaded file",
+      "The source row has kind='file', mime_type='application/pdf'"
+    ],
+    "depends_on": ["F-003", "F-009"],
+    "passes": false
+  },
+  {
+    "id": "F-012",
+    "category": "core",
+    "phase": 1,
+    "priority": "P0",
+    "description": "After a successful source upload, FastAPI notifies Dagster: adds a dynamic partition key (src_{source_id}) to the 'sources' partition definition and reports a runtime asset materialization for the 'source' external asset",
+    "verification": [
+      "After uploading a PDF, the Dagster GraphQL query for dynamic partitions on 'sources' includes the new partition key",
+      "The Dagster UI shows a materialization event for asset 'source' with the correct partition key",
+      "GET /api/runs listing after upload shows a run record with kind='upload' (or the source appears in partition list)"
+    ],
+    "depends_on": ["F-004", "F-011"],
+    "passes": false
+  },
+  {
+    "id": "F-013",
+    "category": "core",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Get source details: GET /api/sources/{id} returns the full source record including storage_uri, sha256, size, mime_type, and collection_id",
+    "verification": [
+      "GET /api/sources/{id} for an existing source returns 200 with all required fields populated",
+      "GET /api/sources/99999 returns 404"
+    ],
+    "depends_on": ["F-011"],
+    "passes": false
+  },
+  {
+    "id": "F-014",
+    "category": "core",
+    "phase": 1,
+    "priority": "P1",
+    "description": "List sources in a collection: GET /api/sources/collections/{id}/sources returns paginated source records for that collection",
+    "verification": [
+      "After uploading 3 PDFs to a collection, GET /api/sources/collections/{id}/sources returns {\"items\": [<3 items>], \"total\": 3}",
+      "Each item includes id, original_name, storage_uri, sha256, uploaded_at"
+    ],
+    "depends_on": ["F-011"],
+    "passes": false
+  },
+  {
+    "id": "F-015",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Operator registry seed: a migration or seed script inserts the initial MinerU extractor operator row into the operator table with correct category, config_schema, and input/output_kind values",
+    "verification": [
+      "After running the seed, SELECT * FROM operator WHERE name='mineru' returns 1 row with category='extractor', input_kind='source', output_kind='document'",
+      "The config_schema column is valid JSON"
+    ],
+    "depends_on": ["F-002"],
+    "passes": false
+  },
+  {
+    "id": "F-016",
+    "category": "api",
+    "phase": 1,
+    "priority": "P1",
+    "description": "List operators: GET /api/operators?category=extractor returns all active operators in that category",
+    "verification": [
+      "GET /api/operators?category=extractor returns 200 with an array containing the MinerU operator row",
+      "Each item includes id, name, version, category, config_schema",
+      "GET /api/operators?category=tagger returns operators with category='tagger'"
+    ],
+    "depends_on": ["F-015", "F-008"],
+    "passes": false
+  },
+  {
+    "id": "F-017",
+    "category": "api",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Get operator detail: GET /api/operators/{id} returns the full operator record including config_schema, output_schema, and default_config",
+    "verification": [
+      "GET /api/operators/{mineru_id} returns 200 with all fields including config_schema as a valid JSON Schema object",
+      "GET /api/operators/99999 returns 404"
+    ],
+    "depends_on": ["F-016"],
+    "passes": false
+  },
+  {
+    "id": "F-018",
+    "category": "core",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Trigger MinerU extraction: POST /api/runs with {asset: 'extract_mineru', source_ids: [...]} launches a Dagster backfill for the specified source partitions, creates a run record in Postgres, and returns the dagster_run_id",
+    "verification": [
+      "POST /api/runs {\"asset\": \"extract_mineru\", \"source_ids\": [<id>]} returns 202 with {\"dagster_run_id\": \"...\", \"run_id\": <int>}",
+      "A row exists in the run table with kind='extract', status='pending' or 'running'",
+      "The Dagster UI shows a backfill launched for the 'extract_mineru' asset"
+    ],
+    "depends_on": ["F-004", "F-012", "F-015"],
+    "passes": false
+  },
+  {
+    "id": "F-019",
+    "category": "plugin",
+    "phase": 1,
+    "priority": "P0",
+    "description": "MinerU extractor operator processes a PDF source, produces a valid DoclingDocument JSON at s3://documents/{source_id}/extract_mineru/doc.docling.json, and writes a document_variant row to Postgres",
+    "verification": [
+      "After triggering extract_mineru for a source and waiting for the run to succeed, GET /api/sources/{source_id}/documents returns 1 variant with extractor_name='mineru'",
+      "The file s3://documents/{source_id}/extract_mineru/doc.docling.json exists in MinIO and is valid JSON",
+      "The document_variant row has is_canonical=true (first variant is auto-canonical)",
+      "The document_variant row has a non-null dagster_run_id"
+    ],
+    "depends_on": ["F-018"],
+    "passes": false
+  },
+  {
+    "id": "F-020",
+    "category": "core",
+    "phase": 1,
+    "priority": "P1",
+    "description": "List document variants: GET /api/sources/{source_id}/documents returns all document_variant rows for that source",
+    "verification": [
+      "After a successful extraction, GET /api/sources/{id}/documents returns array with 1 item containing extractor_name, extractor_version, storage_prefix, is_canonical, materialized_at",
+      "GET /api/sources/99999/documents returns 404"
+    ],
+    "depends_on": ["F-019"],
+    "passes": false
+  },
+  {
+    "id": "F-021",
+    "category": "core",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Set canonical document variant: POST /api/sources/{source_id}/documents/{extractor_name}/set-canonical updates is_canonical on the target variant and clears it on any previous canonical",
+    "verification": [
+      "POST /api/sources/{id}/documents/mineru/set-canonical returns 200",
+      "SELECT * FROM document_variant WHERE source_id={id} AND is_canonical=true returns exactly 1 row with extractor_name='mineru'",
+      "The unique partial index on is_canonical enforces the one-canonical constraint"
+    ],
+    "depends_on": ["F-019"],
+    "passes": false
+  },
+  {
+    "id": "F-022",
+    "category": "api",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Render document preview: GET /api/documents/{variant_id}/render returns a markdown representation of the DoclingDocument for display in the UI",
+    "verification": [
+      "GET /api/documents/{variant_id}/render returns 200 with Content-Type text/markdown and non-empty body",
+      "The rendered markdown contains text extracted from the source PDF",
+      "GET /api/documents/99999/render returns 404"
+    ],
+    "depends_on": ["F-019"],
+    "passes": false
+  },
+  {
+    "id": "F-023",
+    "category": "core",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Lance global chunks table is initialized with the correct Arrow schema (as defined in §4.2) on first use; the table is created at s3://lance/chunks/",
+    "verification": [
+      "After system startup and first chunking run, `lance.dataset('s3://lance/chunks/').schema` contains all required fields including chunk_id, source_id, text, token_count, attr_quality_score, attr_lang_code, attr_minhash_signature",
+      "The table path is accessible via the MinIO SDK"
+    ],
+    "depends_on": ["F-003"],
+    "passes": false
+  },
+  {
+    "id": "F-024",
+    "category": "core",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Trigger chunking: POST /api/runs with {asset: 'chunks', source_ids: [...]} launches a Dagster backfill for the chunking asset on the specified partitions",
+    "verification": [
+      "POST /api/runs {\"asset\": \"chunks\", \"source_ids\": [<id>]} returns 202 with {\"dagster_run_id\": \"...\"}",
+      "A run row is created with kind='chunk'",
+      "Dagster shows a backfill for 'chunks' asset launched"
+    ],
+    "depends_on": ["F-018"],
+    "passes": false
+  },
+  {
+    "id": "F-025",
+    "category": "plugin",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Chunking operator applies fixed-size chunking to the canonical DoclingDocument for a source and writes chunk rows to the Lance table with correct chunk_id naming, source_id, text, and token_count",
+    "verification": [
+      "After chunking a 10-page PDF, SELECT COUNT(*) FROM Lance where source_id={id} returns > 0",
+      "Each row has chunk_id matching pattern '{source_id}_{seq}', non-null text, non-null token_count, augmented_from=null",
+      "All attr_* columns are null on newly inserted rows",
+      "producer_asset='chunks' on all rows for this source"
+    ],
+    "depends_on": ["F-023", "F-024", "F-019"],
+    "passes": false
+  },
+  {
+    "id": "F-026",
+    "category": "core",
+    "phase": 1,
+    "priority": "P0",
+    "description": "LanceChunksIOManager row mode: writing new chunk rows deletes any existing rows for the same source_id + producer_asset combination before inserting, preventing duplicates on re-run",
+    "verification": [
+      "Run chunking on a source, then run it again; final Lance row count for that source equals the count from a single run (not doubled)",
+      "No rows with duplicate chunk_id values exist in the table"
+    ],
+    "depends_on": ["F-025"],
+    "passes": false
+  },
+  {
+    "id": "F-027",
+    "category": "core",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Trigger quality tagger: POST /api/runs {asset: 'attr_quality', source_ids: [...]} launches the quality tagger Dagster backfill; on completion, attr_quality_score and attr_quality_provider columns are populated in Lance for the target source's chunks",
+    "verification": [
+      "POST /api/runs {\"asset\": \"attr_quality\", \"source_ids\": [<id>]} returns 202",
+      "After run completes, SELECT attr_quality_score FROM lance_chunks WHERE source_id={id} returns non-null float values for all rows",
+      "attr_quality_provider is set to the LLM model name used (e.g., 'gpt-4o-mini')"
+    ],
+    "depends_on": ["F-025"],
+    "passes": false
+  },
+  {
+    "id": "F-028",
+    "category": "plugin",
+    "phase": 1,
+    "priority": "P0",
+    "description": "quality_gpt4 tagger operator calls LLM through the LLMGateway (never directly), produces a float score between 0 and 1 per chunk, and updates only the attr_quality_score and attr_quality_provider columns in Lance (column mode, no row inserts)",
+    "verification": [
+      "After running quality tagger, all chunk rows for the source have attr_quality_score between 0.0 and 1.0",
+      "No new rows were inserted into Lance (row count is unchanged)",
+      "The LLM call in the operator code uses ctx.llm.call() or equivalent gateway abstraction, not a direct SDK import",
+      "Running the tagger a second time does not fail; it overwrites the column values"
+    ],
+    "depends_on": ["F-027"],
+    "passes": false
+  },
+  {
+    "id": "F-029",
+    "category": "plugin",
+    "phase": 1,
+    "priority": "P0",
+    "description": "lang_fasttext tagger operator populates attr_lang_code and attr_lang_confidence columns in Lance for all chunks of a source using fasttext language detection",
+    "verification": [
+      "After triggering attr_lang tagger and waiting for success, SELECT attr_lang_code FROM lance_chunks WHERE source_id={id} returns non-null ISO 639-1 codes for all rows",
+      "attr_lang_confidence values are floats between 0 and 1",
+      "No new rows inserted (column mode only)"
+    ],
+    "depends_on": ["F-025", "F-002"],
+    "passes": false
+  },
+  {
+    "id": "F-030",
+    "category": "plugin",
+    "phase": 1,
+    "priority": "P0",
+    "description": "minhash_dedup tagger operator populates attr_minhash_signature, attr_minhash_cluster_id, and attr_minhash_is_head columns in Lance for all chunks",
+    "verification": [
+      "After triggering attr_minhash tagger, SELECT attr_minhash_signature FROM lance_chunks WHERE source_id={id} returns non-null list values for all rows",
+      "attr_minhash_is_head is true for exactly one chunk per duplicate cluster",
+      "No new rows inserted (column mode only)"
+    ],
+    "depends_on": ["F-025"],
+    "passes": false
+  },
+  {
+    "id": "F-031",
+    "category": "core",
+    "phase": 1,
+    "priority": "P0",
+    "description": "LanceChunksIOManager column mode: tagger writes update only the tagger's own columns; other columns (including other attr_* columns) are left unchanged",
+    "verification": [
+      "Run quality tagger, note attr_lang_code is null; run lang tagger; verify attr_quality_score is still set and attr_lang_code is now set",
+      "The column merge uses merge_insert on chunk_id key, not a full row replacement"
+    ],
+    "depends_on": ["F-028", "F-029"],
+    "passes": false
+  },
+  {
+    "id": "F-032",
+    "category": "api",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Chunk query endpoint: POST /api/chunks/query with {filter, columns, limit, offset} executes a DataFusion SQL filter on the Lance table and returns matching chunks with a total count",
+    "verification": [
+      "POST /api/chunks/query {\"filter\": \"source_id = <id>\", \"limit\": 10} returns {\"items\": [<up to 10 chunks>], \"total\": <N>}",
+      "POST /api/chunks/query {\"filter\": \"attr_quality_score > 0.8\"} returns only chunks meeting the filter",
+      "POST /api/chunks/query {\"filter\": \"1=0\"} returns {\"items\": [], \"total\": 0}"
+    ],
+    "depends_on": ["F-025", "F-008"],
+    "passes": false
+  },
+  {
+    "id": "F-033",
+    "category": "api",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Chunk aggregate endpoint: POST /api/chunks/aggregate with {filter, group_by, metrics} returns grouped statistics (e.g., count per lang_code)",
+    "verification": [
+      "POST /api/chunks/aggregate {\"filter\": \"source_id = <id>\", \"group_by\": \"attr_lang_code\", \"metrics\": [\"count\"]} returns array like [{\"attr_lang_code\": \"zh\", \"count\": 42}, ...]",
+      "Result is consistent with direct Lance count for the same filter"
+    ],
+    "depends_on": ["F-032"],
+    "passes": false
+  },
+  {
+    "id": "F-034",
+    "category": "api",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Chunk distribution endpoint: POST /api/chunks/distribution with {filter, column} returns a histogram of values for a numeric or categorical attribute column",
+    "verification": [
+      "POST /api/chunks/distribution {\"filter\": \"source_id=<id>\", \"column\": \"attr_quality_score\"} returns {\"buckets\": [{\"range\": [0,0.1], \"count\": ...}, ...], \"column\": \"attr_quality_score\"}",
+      "POST /api/chunks/distribution {\"column\": \"attr_lang_code\"} returns categorical counts"
+    ],
+    "depends_on": ["F-033"],
+    "passes": false
+  },
+  {
+    "id": "F-035",
+    "category": "api",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Get single chunk: GET /api/chunks/{id} returns the full chunk record including text, token_count, source_refs, docling_refs, all attr_* columns, and augmented_from",
+    "verification": [
+      "GET /api/chunks/{valid_chunk_id} returns 200 with all expected fields",
+      "GET /api/chunks/nonexistent-id returns 404"
+    ],
+    "depends_on": ["F-032"],
+    "passes": false
+  },
+  {
+    "id": "F-036",
+    "category": "api",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Chunk lineage endpoint: GET /api/chunks/{id}/lineage returns the lineage chain: the source record, document_variant record, and the chunk's producer_asset, producer_version, and augmented_from chain",
+    "verification": [
+      "GET /api/chunks/{id}/lineage returns 200 with {\"chunk\": {...}, \"source\": {\"id\": ...}, \"document_variant\": {\"id\": ...}, \"lineage_chain\": [...]}",
+      "For a non-augmented chunk, lineage_chain has 1 entry; for an augmented chunk it traces to the root original chunk"
+    ],
+    "depends_on": ["F-035", "F-020"],
+    "passes": false
+  },
+  {
+    "id": "F-037",
+    "category": "core",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Create a recipe: POST /api/recipes with a valid recipe definition object creates a recipe row in Postgres and returns the new record with id",
+    "verification": [
+      "POST /api/recipes {\"name\": \"my-sft\", \"definition\": {\"sources\": [...], \"filter\": {...}, \"schema\": {\"template\": \"sft_synthesis_qa\", \"config\": {...}}, ...}} returns 201 with {\"id\": <int>, \"name\": \"my-sft\"}",
+      "Row exists in recipe table",
+      "POST with duplicate name returns 409"
+    ],
+    "depends_on": ["F-002", "F-008"],
+    "passes": false
+  },
+  {
+    "id": "F-038",
+    "category": "core",
+    "phase": 1,
+    "priority": "P0",
+    "description": "List recipes: GET /api/recipes returns all recipes owned by the authenticated user",
+    "verification": [
+      "After creating 2 recipes, GET /api/recipes returns {\"items\": [<2 items>], \"total\": 2}",
+      "Each item includes id, name, description, created_at, updated_at"
+    ],
+    "depends_on": ["F-037"],
+    "passes": false
+  },
+  {
+    "id": "F-039",
+    "category": "core",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Get recipe: GET /api/recipes/{id} returns the full recipe including the definition JSON",
+    "verification": [
+      "GET /api/recipes/{id} returns 200 with all fields including the definition object",
+      "GET /api/recipes/99999 returns 404"
+    ],
+    "depends_on": ["F-037"],
+    "passes": false
+  },
+  {
+    "id": "F-040",
+    "category": "core",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Update recipe: PUT /api/recipes/{id} updates the recipe definition and bumps updated_at; update is rejected if a dataset has been materialized from this recipe (schema frozen post-publish rule)",
+    "verification": [
+      "PUT /api/recipes/{id} {\"definition\": {<updated>}} returns 200 with updated definition",
+      "updated_at timestamp is newer than before the update",
+      "After materializing a dataset from this recipe, PUT /api/recipes/{id} returns 422 or 409 with an appropriate error message"
+    ],
+    "depends_on": ["F-037"],
+    "passes": false
+  },
+  {
+    "id": "F-041",
+    "category": "api",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Recipe preview: POST /api/recipes/{id}/preview generates 3-5 sample output rows using the current recipe definition without writing to MinIO, and returns them as JSON",
+    "verification": [
+      "POST /api/recipes/{id}/preview returns 200 with {\"samples\": [<3-5 items>]} where each item matches the schema template's expected output shape",
+      "For sft_synthesis_qa template, each sample has at minimum 'instruction' and 'output' fields",
+      "Preview completes in under 30 seconds for 3 samples"
+    ],
+    "depends_on": ["F-039", "F-032"],
+    "passes": false
+  },
+  {
+    "id": "F-042",
+    "category": "core",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Materialize dataset: POST /api/datasets/{recipe_id}/materialize creates a dataset row (status=pending), launches a Dagster backfill for the dataset asset, and returns the dataset_id and dagster_run_id",
+    "verification": [
+      "POST /api/datasets/{recipe_id}/materialize returns 202 with {\"dataset_id\": <int>, \"dagster_run_id\": \"...\"}",
+      "A dataset row exists in Postgres with status='pending', recipe_snapshot containing the frozen recipe definition",
+      "Dagster shows a backfill launched for the 'dataset' asset"
+    ],
+    "depends_on": ["F-037", "F-004"],
+    "passes": false
+  },
+  {
+    "id": "F-043",
+    "category": "plugin",
+    "phase": 1,
+    "priority": "P0",
+    "description": "sft_synthesis_qa materializer operator reads chunks from Lance using the recipe's filter, calls LLM via gateway to synthesize Q+A pairs, and writes train/validation Parquet splits to s3://datasets/{dataset_id}_v{version}/data/",
+    "verification": [
+      "After materialization completes, Parquet files exist in MinIO at the expected path",
+      "Loading the Parquet file with pandas: columns include 'instruction' and 'output' (or as specified by the template)",
+      "README.md and recipe.json exist alongside the Parquet files",
+      "The recipe_snapshot in recipe.json matches the recipe definition at time of materialization",
+      "All LLM calls in the materializer use ctx.llm.call(), no direct SDK imports"
+    ],
+    "depends_on": ["F-042", "F-032"],
+    "passes": false
+  },
+  {
+    "id": "F-044",
+    "category": "core",
+    "phase": 1,
+    "priority": "P0",
+    "description": "HFDatasetIOManager writes materialized Parquet files to MinIO in a HuggingFace-compatible layout including README.md and dataset_infos.json, and updates the dataset row in Postgres to status=done with sample_count and size_bytes",
+    "verification": [
+      "After materialization, GET /api/datasets/{id} returns {\"status\": \"done\", \"sample_count\": <N>, \"size_bytes\": <bytes>}",
+      "s3://datasets/{dataset_id}_v{version}/dataset_infos.json exists and is valid JSON",
+      "s3://datasets/{dataset_id}_v{version}/README.md exists and contains the dataset_card_md content"
+    ],
+    "depends_on": ["F-043"],
+    "passes": false
+  },
+  {
+    "id": "F-045",
+    "category": "api",
+    "phase": 1,
+    "priority": "P0",
+    "description": "List datasets: GET /api/datasets returns all datasets with their status, recipe_id, version_tag, sample_count, and size_bytes",
+    "verification": [
+      "After a successful materialization, GET /api/datasets returns array containing the new dataset with status='done'",
+      "Each item includes id, recipe_id, version_tag, status, sample_count, size_bytes, materialized_at"
+    ],
+    "depends_on": ["F-044"],
+    "passes": false
+  },
+  {
+    "id": "F-046",
+    "category": "api",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Get dataset detail: GET /api/datasets/{id} returns the full dataset record including recipe_snapshot and stats",
+    "verification": [
+      "GET /api/datasets/{id} returns 200 with all fields including recipe_snapshot (the frozen recipe JSON), stats, and hf_repo_uri",
+      "GET /api/datasets/99999 returns 404"
+    ],
+    "depends_on": ["F-044"],
+    "passes": false
+  },
+  {
+    "id": "F-047",
+    "category": "api",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Dataset download: GET /api/datasets/{id}/download streams the Parquet files from MinIO as a zip archive or returns a presigned URL for direct download",
+    "verification": [
+      "GET /api/datasets/{id}/download returns 200 with appropriate Content-Type and non-empty body (or a JSON with presigned_url field)",
+      "Downloading and extracting the result yields valid Parquet files loadable by pandas",
+      "GET /api/datasets/99999/download returns 404"
+    ],
+    "depends_on": ["F-044"],
+    "passes": false
+  },
+  {
+    "id": "F-048",
+    "category": "api",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Run status endpoint: GET /api/runs/{id} returns the run record including dagster_run_id, kind, status, started_at, ended_at, and config",
+    "verification": [
+      "GET /api/runs/{id} returns 200 with all expected fields",
+      "GET /api/runs/99999 returns 404"
+    ],
+    "depends_on": ["F-018"],
+    "passes": false
+  },
+  {
+    "id": "F-049",
+    "category": "api",
+    "phase": 1,
+    "priority": "P0",
+    "description": "List runs: GET /api/runs returns paginated run records, filterable by status; runs are ordered by started_at descending",
+    "verification": [
+      "After triggering 3 runs, GET /api/runs returns {\"items\": [...], \"total\": 3}",
+      "GET /api/runs?status=success returns only completed runs",
+      "GET /api/runs?status=running returns only in-progress runs"
+    ],
+    "depends_on": ["F-048"],
+    "passes": false
+  },
+  {
+    "id": "F-050",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Dagster event webhook: Dagster posts run status change events to a FastAPI webhook endpoint; FastAPI updates the corresponding run row in Postgres",
+    "verification": [
+      "After a Dagster run completes, GET /api/runs/{id} shows status='success' or 'failed' (not permanently 'running')",
+      "The run's ended_at timestamp is set after completion"
+    ],
+    "depends_on": ["F-018", "F-004"],
+    "passes": false
+  },
+  {
+    "id": "F-051",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P0",
+    "description": "WebSocket run subscription: connecting to /api/ws/runs and subscribing to a run_id receives status change events when the run transitions (e.g., pending -> running -> success)",
+    "verification": [
+      "Connect to ws://localhost:8000/api/ws/runs with a valid JWT",
+      "Trigger a run; receive at minimum one {\"type\": \"run.status_changed\", \"run_id\": \"...\", \"to\": \"success\"} message within 2 minutes",
+      "Disconnecting does not cause server errors"
+    ],
+    "depends_on": ["F-050"],
+    "passes": false
+  },
+  {
+    "id": "F-052",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P1",
+    "description": "WebSocket notification subscription: /api/ws/notifications delivers asset.materialized events when a Dagster asset completes materialization",
+    "verification": [
+      "Connect to /api/ws/notifications",
+      "Trigger an extraction run; receive a {\"type\": \"asset.materialized\", \"asset_key\": \"extract_mineru\", \"partition_key\": \"src_...\"} message",
+      "Receive a {\"type\": \"chunks.added\", \"source_id\": <id>, \"count\": <N>} message after chunking completes"
+    ],
+    "depends_on": ["F-051"],
+    "passes": false
+  },
+  {
+    "id": "F-053",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P0",
+    "description": "LLM Gateway: all LLM calls in operators/materializers go through a centralized LLMGateway that reads API keys from environment, applies rate limiting, and logs call metadata (model, tokens, estimated cost) to Postgres or logs",
+    "verification": [
+      "Triggering quality tagger generates log entries showing model name and approximate token count",
+      "Setting an invalid API key in env causes LLM calls to fail with a clear error (not an unhandled exception)",
+      "No direct openai.ChatCompletion or anthropic.Anthropic() calls exist outside the gateway code path (grep check)"
+    ],
+    "depends_on": ["F-005"],
+    "passes": false
+  },
+  {
+    "id": "F-054",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P1",
+    "description": "DoclingDocIOManager writes DoclingDocument JSON, associated images, and manifest.json to MinIO in the correct path layout (s3://documents/{source_id}/extract_{name}/), handling partial failures atomically",
+    "verification": [
+      "After a successful extraction, MinIO at s3://documents/{source_id}/extract_mineru/ contains doc.docling.json and manifest.json",
+      "If the MinIO write fails mid-way, no partial document_variant row is written to Postgres (or it is cleaned up)",
+      "manifest.json contains source_refs and version info as described in §4.3"
+    ],
+    "depends_on": ["F-019"],
+    "passes": false
+  },
+  {
+    "id": "F-055",
+    "category": "web",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Login page: the frontend renders a login form; submitting valid credentials obtains a JWT and redirects to the home/dashboard page; invalid credentials show an error message",
+    "verification": [
+      "Navigating to http://localhost:5173/login renders a form with email and password fields",
+      "Submitting valid credentials redirects to /",
+      "Submitting invalid credentials shows 'Invalid credentials' error message without navigating away"
+    ],
+    "depends_on": ["F-007"],
+    "passes": false
+  },
+  {
+    "id": "F-056",
+    "category": "web",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Protected routes: all frontend pages except /login redirect to /login when no valid JWT is present in local storage",
+    "verification": [
+      "Navigating to /sources without a token redirects to /login",
+      "After logout (clearing token), navigating to /datasets redirects to /login"
+    ],
+    "depends_on": ["F-055"],
+    "passes": false
+  },
+  {
+    "id": "F-057",
+    "category": "web",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Sources page: lists all source collections; each collection is expandable to show its sources with name, size, and upload date; includes an Upload button",
+    "verification": [
+      "After creating a collection and uploading a PDF via the UI, the Sources page shows the collection with 1 source",
+      "The source row displays original_name, size in human-readable format, and uploaded_at date",
+      "Clicking the Upload button opens a file picker"
+    ],
+    "depends_on": ["F-010", "F-014", "F-055"],
+    "passes": false
+  },
+  {
+    "id": "F-058",
+    "category": "web",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Source upload flow in UI: user selects a PDF file, optionally enters a collection name, clicks upload; a progress indicator is shown; on success the new source appears in the list",
+    "verification": [
+      "Selecting a PDF and clicking Upload shows a loading state",
+      "On success, the new source appears in the Sources list without a full page reload",
+      "On upload failure, an error toast is shown"
+    ],
+    "depends_on": ["F-011", "F-057"],
+    "passes": false
+  },
+  {
+    "id": "F-059",
+    "category": "web",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Source detail page: navigating to a source shows its metadata and a Trigger Extraction button; after extraction, shows the document variant with a Preview button",
+    "verification": [
+      "Navigating to /sources/{id} shows source name, size, sha256, upload date",
+      "Clicking 'Trigger Extraction' sends POST /api/runs and shows a run status indicator",
+      "After extraction completes, a document variant entry appears with a Preview button"
+    ],
+    "depends_on": ["F-013", "F-020", "F-018", "F-057"],
+    "passes": false
+  },
+  {
+    "id": "F-060",
+    "category": "web",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Document preview page: clicking Preview on a document variant renders the markdown output of GET /api/documents/{variant_id}/render in a readable format",
+    "verification": [
+      "Navigating to the preview opens a page or modal with rendered markdown content",
+      "Headings, paragraphs, and lists are formatted visually",
+      "The rendered content is non-empty for a real PDF source"
+    ],
+    "depends_on": ["F-022", "F-059"],
+    "passes": false
+  },
+  {
+    "id": "F-061",
+    "category": "web",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Chunks Explorer page: shows a filter sidebar with quality score slider, language code checkboxes, and source collection checkboxes; main area shows a virtual-scroll table of matching chunks with live count",
+    "verification": [
+      "Navigating to /chunks renders the filter sidebar and table",
+      "Moving the quality score slider updates the chunk count within 2 seconds without a full page reload",
+      "Checking/unchecking a language code updates the table",
+      "The count label shows 'N chunks match'",
+      "Table supports at least 1000 rows visible without freezing (virtual scroll)"
+    ],
+    "depends_on": ["F-032", "F-034", "F-055"],
+    "passes": false
+  },
+  {
+    "id": "F-062",
+    "category": "web",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Chunk detail panel: clicking a row in the Chunks Explorer slides out a detail panel showing the chunk's text, token_count, all attribute values, source_refs (page/bbox), and a link to the source document",
+    "verification": [
+      "Clicking a chunk row opens a side panel with chunk text and attr_quality_score, attr_lang_code values",
+      "source_refs shows at minimum page number",
+      "A link or button navigates to the source document"
+    ],
+    "depends_on": ["F-035", "F-061"],
+    "passes": false
+  },
+  {
+    "id": "F-063",
+    "category": "web",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Distribution tab in Chunks Explorer: switching to the Distribution tab shows a histogram for attr_quality_score and a bar chart for attr_lang_code based on the current filter",
+    "verification": [
+      "Clicking the Distribution tab renders at least 2 charts",
+      "Each histogram/bar chart shows data consistent with the current filter",
+      "Clicking a histogram bucket adds a filter pill to the active filters"
+    ],
+    "depends_on": ["F-034", "F-061"],
+    "passes": false
+  },
+  {
+    "id": "F-064",
+    "category": "web",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Trigger tagger from Chunks Explorer: clicking 'Apply Tagger' opens an operator selection dropdown; selecting a tagger and clicking Run triggers POST /api/runs; a status toast shows progress",
+    "verification": [
+      "Clicking 'Apply Tagger' opens a modal with a list of available taggers from GET /api/operators?category=tagger",
+      "Selecting a tagger and clicking Run sends POST /api/runs and shows a toast with the run_id",
+      "The toast updates to 'completed' when the WebSocket delivers a run.status_changed event"
+    ],
+    "depends_on": ["F-016", "F-018", "F-051", "F-061"],
+    "passes": false
+  },
+  {
+    "id": "F-065",
+    "category": "web",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Recipes page: lists all recipes with name, description, and created_at; includes a Create New Recipe button that navigates to the recipe editor",
+    "verification": [
+      "After creating a recipe via the API, /recipes page lists it",
+      "Clicking Create New Recipe navigates to /recipes/new",
+      "Each row has an Edit button that navigates to /recipes/{id}/edit"
+    ],
+    "depends_on": ["F-038", "F-055"],
+    "passes": false
+  },
+  {
+    "id": "F-066",
+    "category": "web",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Recipe editor: a multi-step form (Sources, Filter, View, Schema, Sampling, Output) allows the user to build a recipe; saving sends PUT /api/recipes/{id} or POST /api/recipes; the recipe definition is persisted",
+    "verification": [
+      "All 6 steps render without errors",
+      "Step 1 shows available source collections (loaded from GET /api/sources/collections)",
+      "Step 4 shows available schema templates as selectable cards (loaded from GET /api/operators?category=materializer)",
+      "Clicking Save sends the correct request and shows a success message",
+      "After saving, GET /api/recipes/{id} returns the updated definition"
+    ],
+    "depends_on": ["F-037", "F-040", "F-010", "F-016", "F-065"],
+    "passes": false
+  },
+  {
+    "id": "F-067",
+    "category": "web",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Recipe editor auto-generated config form: when a schema template (materializer operator) is selected in Step 4, the config form is auto-generated from the operator's config_schema JSON Schema field",
+    "verification": [
+      "Selecting the sft_synthesis_qa template renders form fields for synthesizer_model (dropdown) and prompt_template (textarea)",
+      "Required fields are marked and form submission is blocked if they are empty",
+      "Changing the template selection changes the form fields"
+    ],
+    "depends_on": ["F-017", "F-066"],
+    "passes": false
+  },
+  {
+    "id": "F-068",
+    "category": "web",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Recipe editor filter builder: Step 2 provides a visual filter builder that lets users add conditions on chunk attributes (quality_score range, lang_code in set, source collection); the built filter is serialized to a SQL WHERE clause",
+    "verification": [
+      "Adding a quality_score > 0.7 condition via the UI produces filter {\"where\": \"attr_quality_score > 0.7\"} in the recipe definition",
+      "Adding a language filter produces valid SQL like \"attr_lang_code IN ('zh', 'en')\"",
+      "The filter pill appears in the filter bar and can be removed"
+    ],
+    "depends_on": ["F-066"],
+    "passes": false
+  },
+  {
+    "id": "F-069",
+    "category": "web",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Datasets page: lists all datasets with name (from recipe), version_tag, status, sample_count, and size_bytes; completed datasets have a Download button",
+    "verification": [
+      "After a successful materialization, /datasets page shows the dataset with status='done' and sample_count > 0",
+      "Clicking Download initiates a download of the Parquet files",
+      "Pending/running datasets show a status badge without a download button"
+    ],
+    "depends_on": ["F-045", "F-047", "F-055"],
+    "passes": false
+  },
+  {
+    "id": "F-070",
+    "category": "web",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Dataset detail page: clicking a dataset shows its recipe_snapshot, stats (split sizes, attribute distributions), and a list of Parquet file paths",
+    "verification": [
+      "Navigating to /datasets/{id} renders the recipe_snapshot as formatted JSON or YAML",
+      "Stats section shows train/validation split sizes",
+      "A file listing shows the Parquet files stored in MinIO"
+    ],
+    "depends_on": ["F-046", "F-069"],
+    "passes": false
+  },
+  {
+    "id": "F-071",
+    "category": "web",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Materialize dataset button: the dataset detail or recipe detail page has a Materialize button; clicking it calls POST /api/datasets/{recipe_id}/materialize and shows a progress indicator connected to the WebSocket",
+    "verification": [
+      "Clicking Materialize shows a loading spinner/badge",
+      "When the WebSocket delivers a run.status_changed to='success' event, the status badge updates to 'Done'",
+      "If materialization fails, the badge shows 'Failed'"
+    ],
+    "depends_on": ["F-042", "F-051", "F-069"],
+    "passes": false
+  },
+  {
+    "id": "F-072",
+    "category": "web",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Activity/Runs page: lists recent runs with dagster_run_id, kind, status, started_at, and ended_at; links to Dagster UI for log details",
+    "verification": [
+      "Navigating to /runs shows a list of run records",
+      "Each row displays kind (extract/chunk/tag/materialize), status badge, and timestamps",
+      "A 'View Logs' link opens the Dagster UI run page for that dagster_run_id in a new tab"
+    ],
+    "depends_on": ["F-049", "F-055"],
+    "passes": false
+  },
+  {
+    "id": "F-073",
+    "category": "web",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Real-time run status updates in UI: the Runs page and any page with an active run shows live status updates via WebSocket without requiring a page refresh",
+    "verification": [
+      "With /runs open, trigger a new extraction; the new run appears in the list within 5 seconds without refreshing",
+      "The status badge changes from 'running' to 'success' or 'failed' automatically when the run completes"
+    ],
+    "depends_on": ["F-051", "F-072"],
+    "passes": false
+  },
+  {
+    "id": "F-074",
+    "category": "api",
+    "phase": 1,
+    "priority": "P1",
+    "description": "OpenAPI spec is generated automatically by FastAPI and is accessible at GET /api/openapi.json; the spec covers all routes defined in §9.1",
+    "verification": [
+      "GET /api/openapi.json returns 200 with a valid OpenAPI 3.x JSON object",
+      "The spec includes paths for /api/sources/upload, /api/chunks/query, /api/recipes, /api/datasets, /api/runs, /api/operators, /api/ws/runs",
+      "All request/response schemas have types (no plain {})."
+    ],
+    "depends_on": ["F-009", "F-032", "F-037", "F-042", "F-048"],
+    "passes": false
+  },
+  {
+    "id": "F-075",
+    "category": "api",
+    "phase": 1,
+    "priority": "P1",
+    "description": "TypeScript API types are generated via `make codegen` from the OpenAPI spec and committed in packages/api-types/; the web frontend imports types only from that package",
+    "verification": [
+      "Running `make codegen` exits 0 and updates packages/api-types/",
+      "The frontend TypeScript build (`pnpm build`) succeeds after codegen",
+      "grep -r 'from.*api-types' apps/web/src/ returns results (frontend imports from the package)",
+      "No raw fetch calls in apps/web/src use manually typed response shapes"
+    ],
+    "depends_on": ["F-074"],
+    "passes": false
+  },
+  {
+    "id": "F-076",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Async SQLAlchemy: all database interactions in apps/api/ use the async session (AsyncSession); no synchronous session.query() calls exist anywhere in the API codebase",
+    "verification": [
+      "grep -r 'session.query\\|Session()\\|sessionmaker(' apps/api/ returns 0 results",
+      "Running the full test suite does not produce 'greenlet_spawn' or 'sync session' warnings",
+      "All async db operations complete under normal load without blocking the event loop"
+    ],
+    "depends_on": ["F-002"],
+    "passes": false
+  },
+  {
+    "id": "F-077",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P0",
+    "description": "Source SHA-256 deduplication: attempting to upload a file with the same sha256 as an existing source in the same collection returns 409 Conflict with the existing source_id; the file is not written to MinIO twice",
+    "verification": [
+      "Upload a PDF; note the sha256; upload the same file again to the same collection; receive 409 with {\"existing_source_id\": <id>}",
+      "MinIO contains only one copy of the file",
+      "Uploading the same file to a different collection succeeds (dedup is per-collection)"
+    ],
+    "depends_on": ["F-011"],
+    "passes": false
+  },
+  {
+    "id": "F-078",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Run logs link: GET /api/runs/{id}/logs returns either the Dagster logs for that run or a redirect URL to the Dagster UI run page",
+    "verification": [
+      "GET /api/runs/{id}/logs for a completed run returns 200 with log content or {\"dagster_ui_url\": \"http://...\"}",
+      "GET /api/runs/99999/logs returns 404"
+    ],
+    "depends_on": ["F-048"],
+    "passes": false
+  },
+  {
+    "id": "F-079",
+    "category": "core",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Operator registration endpoint: POST /api/operators (admin only) inserts a new operator row into Postgres; the new operator becomes available via GET /api/operators",
+    "verification": [
+      "POST /api/operators with a valid operator payload returns 201 with {\"id\": <int>}",
+      "GET /api/operators?category=tagger subsequently includes the new operator",
+      "POST /api/operators with duplicate name+version returns 409"
+    ],
+    "depends_on": ["F-016", "F-008"],
+    "passes": false
+  },
+  {
+    "id": "F-080",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Orphan data cleanup job: a scheduled Dagster job or cron task detects MinIO files that have no corresponding Postgres record (orphaned from partial writes) and deletes them; runs on a schedule",
+    "verification": [
+      "Manually inserting a test file into MinIO without a DB record, then running the cleanup job, results in the file being deleted",
+      "The cleanup job logs how many orphaned files were removed"
+    ],
+    "depends_on": ["F-003", "F-005"],
+    "passes": false
+  },
+  {
+    "id": "F-081",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Source upload metadata.json: alongside the original file in MinIO, a metadata.json is written containing mime_type, original_name, sha256, size, uploaded_at, and license",
+    "verification": [
+      "After uploading a PDF, s3://sources/{source_id}/metadata.json exists in MinIO",
+      "Its content parses as valid JSON with all required fields matching the source row"
+    ],
+    "depends_on": ["F-011"],
+    "passes": false
+  },
+  {
+    "id": "F-082",
+    "category": "core",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Recipe schema validation: POST /api/recipes and PUT /api/recipes/{id} validate the recipe definition against the Recipe DSL schema (§7.1); invalid definitions are rejected with 422 and descriptive error messages",
+    "verification": [
+      "POST /api/recipes with a definition missing required 'sources' field returns 422 with an error pointing to the missing field",
+      "POST /api/recipes with an invalid filter SQL string returns 422",
+      "POST /api/recipes with a valid definition returns 201"
+    ],
+    "depends_on": ["F-037"],
+    "passes": false
+  },
+  {
+    "id": "F-083",
+    "category": "core",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Recipe materialization versioning: each call to POST /api/datasets/{recipe_id}/materialize increments the version_tag; the recipe_snapshot is frozen at the time of the call; subsequent recipe edits do not affect the snapshot",
+    "verification": [
+      "Materialize a recipe; note version_tag='v1'; update the recipe; materialize again; new dataset has version_tag='v2'",
+      "The recipe_snapshot on the v1 dataset still contains the original recipe definition, not the updated one",
+      "GET /api/datasets/{v1_id} returns the original recipe_snapshot"
+    ],
+    "depends_on": ["F-042", "F-040"],
+    "passes": false
+  },
+  {
+    "id": "F-084",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Environment config: all secrets and external endpoints (POSTGRES_URL, REDIS_URL, MINIO_ENDPOINT, DAGSTER_GRAPHQL, OPENAI_API_KEY) are read from environment variables; no secrets are hardcoded in source code",
+    "verification": [
+      "grep -r 'OPENAI_API_KEY\\s*=\\s*[\"\\x27]sk-' apps/ dagster/ plugins/ returns 0 results",
+      "Starting the stack with missing required env vars causes a clear startup error (not a runtime exception on first request)",
+      "All configurable values are documented in docker/docker-compose.dev.yml or a .env.example file"
+    ],
+    "depends_on": ["F-001"],
+    "passes": false
+  },
+  {
+    "id": "F-085",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P1",
+    "description": "API error responses: all FastAPI endpoints return structured JSON error responses with {\"detail\": \"...\", \"code\": \"...\"}; unhandled exceptions return 500 with a generic message (no stack traces in production)",
+    "verification": [
+      "GET /api/sources/99999 returns {\"detail\": \"Source not found\", \"code\": \"not_found\"}",
+      "An intentionally triggered 500 in a test route returns {\"detail\": \"Internal server error\"} without a Python traceback in the body"
+    ],
+    "depends_on": ["F-001"],
+    "passes": false
+  },
+  {
+    "id": "F-086",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P1",
+    "description": "verify/checks.sh api layer check: runs targeted API smoke tests (create collection, upload source, query chunks) and exits 0 on a correctly deployed system",
+    "verification": [
+      "`bash verify/checks.sh api` exits 0 after a clean stack startup",
+      "The script creates a collection, uploads a test PDF, and queries GET /api/sources/collections"
+    ],
+    "depends_on": ["F-006", "F-011", "F-009"],
+    "passes": false
+  },
+  {
+    "id": "F-087",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P1",
+    "description": "verify/checks.sh pipeline layer check: triggers a full extraction + chunking run on a test fixture PDF, waits for completion, and verifies chunks exist in Lance",
+    "verification": [
+      "`bash verify/checks.sh pipeline` exits 0",
+      "The check confirms chunk rows exist in Lance for the test source after the pipeline completes"
+    ],
+    "depends_on": ["F-025", "F-086"],
+    "passes": false
+  },
+  {
+    "id": "F-088",
+    "category": "core",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Source upload supports size limit: files exceeding a configured maximum size (default 500 MB) are rejected with 413 before being written to MinIO",
+    "verification": [
+      "Uploading a file > 500 MB returns 413 with {\"detail\": \"File too large\"}",
+      "No partial file is written to MinIO for the rejected upload"
+    ],
+    "depends_on": ["F-011"],
+    "passes": false
+  },
+  {
+    "id": "F-089",
+    "category": "api",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Source file type validation: POST /api/sources/upload rejects non-PDF files with 422 (in MVP, only PDF is supported per §12.1)",
+    "verification": [
+      "Uploading a .txt file returns 422 with message indicating only PDF is supported",
+      "Uploading a .docx file returns 422",
+      "Uploading a valid .pdf file returns 201"
+    ],
+    "depends_on": ["F-011"],
+    "passes": false
+  },
+  {
+    "id": "F-090",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Dagster Postgres schema separation: the Dagster internal schema and the business schema coexist in the same Postgres instance under separate schema namespaces (e.g., public and dagster); migrations for each are independent",
+    "verification": [
+      "\\dn in psql lists at least two schemas: 'public' (business) and 'dagster' (or equivalent)",
+      "Running business migrations does not touch the dagster schema",
+      "Dagster webserver starts without errors when the dagster schema is initialized"
+    ],
+    "depends_on": ["F-002"],
+    "passes": false
+  },
+  {
+    "id": "F-091",
+    "category": "core",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Tagger seed: a seed script inserts the three MVP tagger operator rows (quality_gpt4, lang_fasttext, minhash_dedup) into the operator table with correct config_schema and output_schema values",
+    "verification": [
+      "After running the seed, SELECT name FROM operator WHERE category='tagger' returns 3 rows: 'quality_gpt4', 'lang_fasttext', 'minhash_dedup'",
+      "Each operator's config_schema is a valid JSON Schema document",
+      "Each operator's output_schema lists the Lance columns it will write"
+    ],
+    "depends_on": ["F-015"],
+    "passes": false
+  },
+  {
+    "id": "F-092",
+    "category": "plugin",
+    "phase": 1,
+    "priority": "P0",
+    "description": "sft_synthesis_qa materializer seed: a seed script inserts the sft_synthesis_qa materializer operator row into the operator table with a config_schema defining synthesizer_model and prompt_template fields",
+    "verification": [
+      "SELECT name FROM operator WHERE category='materializer' AND name='sft_synthesis_qa' returns 1 row",
+      "config_schema includes 'synthesizer_model' as an enum and 'prompt_template' as a required string"
+    ],
+    "depends_on": ["F-015"],
+    "passes": false
+  },
+  {
+    "id": "F-093",
+    "category": "core",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Dagster asset factory: at startup, the Dagster code location loads all active operators from the operator table and generates corresponding Dagster asset definitions dynamically; a new tagger row in the DB becomes a new Dagster asset after code location reload",
+    "verification": [
+      "After inserting a new test tagger operator row and calling the Dagster code location reload endpoint, GET /api/operators?category=tagger returns the new operator AND the Dagster UI shows a corresponding attr_* asset",
+      "Removing an operator (is_active=false) and reloading removes the asset from Dagster UI"
+    ],
+    "depends_on": ["F-091", "F-005"],
+    "passes": false
+  },
+  {
+    "id": "F-094",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Structured logging: all services log in JSON format with at minimum {timestamp, level, service, trace_id, message}; errors include exception type and message",
+    "verification": [
+      "Tail the fastapi container logs; all lines parse as valid JSON",
+      "Triggering a 404 produces a log line with level='warning' and the request path",
+      "An intentional error produces a log with level='error' and exception details"
+    ],
+    "depends_on": ["F-001"],
+    "passes": false
+  },
+  {
+    "id": "F-095",
+    "category": "core",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Delete source: DELETE /api/sources/{id} removes the source row from Postgres, deletes the MinIO object at storage_uri, and cascades to delete associated document_variant rows",
+    "verification": [
+      "DELETE /api/sources/{id} returns 204",
+      "GET /api/sources/{id} subsequently returns 404",
+      "The MinIO object no longer exists",
+      "SELECT * FROM document_variant WHERE source_id={id} returns 0 rows (cascade)"
+    ],
+    "depends_on": ["F-011"],
+    "passes": false
+  },
+  {
+    "id": "F-096",
+    "category": "core",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Delete source collection: DELETE /api/sources/collections/{id} removes the collection and cascades to delete all its sources and their document variants; rejects if any dataset references chunks from this collection",
+    "verification": [
+      "DELETE /api/sources/collections/{id} with no dependent datasets returns 204",
+      "All source and document_variant rows for the collection are removed",
+      "Attempting to delete a collection with an active dataset materialization returns 409"
+    ],
+    "depends_on": ["F-009", "F-095"],
+    "passes": false
+  },
+  {
+    "id": "F-097",
+    "category": "web",
+    "phase": 1,
+    "priority": "P1",
+    "description": "Home / dashboard page: shows a summary of recent activity (last 5 runs), count of source collections, total chunks, and count of materialized datasets",
+    "verification": [
+      "Navigating to / renders counts for source collections, chunks, and datasets",
+      "Recent runs section shows the 5 most recent run records with status badges",
+      "Numbers are consistent with API responses from GET /api/sources/collections, GET /api/chunks/aggregate, and GET /api/datasets"
+    ],
+    "depends_on": ["F-010", "F-033", "F-045", "F-055"],
+    "passes": false
+  },
+  {
+    "id": "F-098",
+    "category": "infra",
+    "phase": 1,
+    "priority": "P0",
+    "description": "End-to-end smoke test: a scripted test uploads a fixture PDF, triggers extraction, chunking, and quality+lang tagging, creates a recipe, materializes a dataset, and downloads it; the entire flow completes without error",
+    "verification": [
+      "Running `bash verify/checks.sh e2e` exits 0 within 10 minutes on a clean stack",
+      "The downloaded Parquet file is valid and contains at least 1 row",
+      "No error-level log messages appear in any service during the run"
+    ],
+    "depends_on": ["F-047", "F-028", "F-029", "F-043", "F-087"],
+    "passes": false
+  },
+  {
+    "id": "F-099",
+    "category": "infra",
+    "phase": 2,
+    "priority": "P2",
+    "description": "Augmenter support: LanceChunksIOManager row mode supports augmenter operators that write new chunk rows with augmented_from populated and all attr_* columns set to null",
+    "verification": [
+      "After running a translate augmenter, new rows exist with augmented_from pointing to original chunk_ids",
+      "All attr_* columns on augmented rows are null"
+    ],
+    "depends_on": ["F-026"],
+    "passes": false
+  },
+  {
+    "id": "F-100",
+    "category": "plugin",
+    "phase": 2,
+    "priority": "P2",
+    "description": "Docling extractor: extract_docling asset processes docx/pptx/html sources and produces a DoclingDocument JSON variant",
+    "verification": [
+      "Uploading a .docx file and triggering extract_docling produces a document_variant with extractor_name='docling'",
+      "The resulting doc.docling.json is valid"
+    ],
+    "depends_on": ["F-019"],
+    "passes": false
+  },
+  {
+    "id": "F-101",
+    "category": "plugin",
+    "phase": 2,
+    "priority": "P2",
+    "description": "Firecrawl extractor: extract_firecrawl asset fetches a URL source and produces a DoclingDocument JSON variant",
+    "verification": [
+      "Uploading a URL source and triggering extract_firecrawl produces a valid document_variant",
+      "The document contains extracted text from the URL"
+    ],
+    "depends_on": ["F-019"],
+    "passes": false
+  },
+  {
+    "id": "F-102",
+    "category": "core",
+    "phase": 2,
+    "priority": "P2",
+    "description": "VLM document enrichment: the document_vlm_enriched asset calls VLM API via LLMGateway for images in a DoclingDocument, replacing image placeholders with text descriptions",
+    "verification": [
+      "After running document_vlm_enriched, the enriched document JSON contains non-empty image description fields",
+      "The VLM call uses ctx.llm.call()"
+    ],
+    "depends_on": ["F-053"],
+    "passes": false
+  },
+  {
+    "id": "F-103",
+    "category": "web",
+    "phase": 2,
+    "priority": "P2",
+    "description": "Lineage UI: a Lineage page renders a react-flow DAG showing the asset graph for a selected source, with nodes for source, document, chunks, attributes, and dataset",
+    "verification": [
+      "Navigating to /lineage?source_id={id} renders a graph with at least 4 connected nodes",
+      "Clicking a node shows metadata about that asset"
+    ],
+    "depends_on": ["F-036"],
+    "passes": false
+  },
+  {
+    "id": "F-104",
+    "category": "web",
+    "phase": 2,
+    "priority": "P2",
+    "description": "Recipe raw YAML mode: the recipe editor has a toggle to switch between the visual multi-step form and a raw YAML text editor (monaco-editor); changes in YAML mode sync back to the visual form",
+    "verification": [
+      "Toggling to YAML mode renders the recipe definition as YAML in a monaco editor",
+      "Editing the YAML and toggling back to visual mode reflects the changes"
+    ],
+    "depends_on": ["F-066"],
+    "passes": false
+  },
+  {
+    "id": "F-105",
+    "category": "core",
+    "phase": 2,
+    "priority": "P2",
+    "description": "Advanced sampling: the recipe materializer supports stratified sampling per source collection with per_source_caps as defined in the Recipe DSL §7.1",
+    "verification": [
+      "A recipe with per_source_caps: {1: 100} produces a dataset where at most 100 samples come from collection 1",
+      "stratified strategy produces proportional representation of sources"
+    ],
+    "depends_on": ["F-043"],
+    "passes": false
+  }
+]
