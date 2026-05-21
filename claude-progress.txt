@@ -1,0 +1,4 @@
+# Append-only progress journal. Never edit historical entries.
+# Format: <ISO timestamp> | <session id or "bootstrap"> | <entry>
+
+2026-05-21T18:03:07Z | bootstrap | harness skeleton created from HARNESS-BOOTSTRAP.md; spec/ and contracts/ still empty; next step is /plan
