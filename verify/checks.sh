@@ -17,7 +17,7 @@ set -euo pipefail
 LAYER="${1:-all}"
 shift || true
 
-run() { echo "▶ $*"; eval "$*"; }
+run() { echo "▶ $*"; ( eval "$*" ); }
 exists() { [[ -d "$1" ]]; }
 
 case "$LAYER" in
@@ -227,6 +227,68 @@ assert len(body['dagster_version']) > 0, f'dagster_version is empty: {body}'
 print('  V2 OK (post-restart): dagster_version =', body['dagster_version'])
 " || { echo "FAIL: V2 check failed after restart"; exit 1; }
     ;;
+  runs)
+    # F-005: hello-world Dagster job launch + status poll
+    COMPOSE="docker/docker-compose.dev.yml"
+    [[ -f "$COMPOSE" ]] || { echo "no $COMPOSE yet"; exit 0; }
+
+    FASTAPI_HOST_PORT="${FASTAPI_HOST_PORT:-18000}"
+
+    echo "--- runs V1: trigger hello-world job via FastAPI ---"
+    # 2-step pattern: capture body to a temp file, write status code to RESP.
+    # This ensures non-201 responses print the body for debugging rather than
+    # silently failing. curl -sS shows connection errors on stderr without -f
+    # suppressing the body.
+    # mktemp avoids clobber risk on shared CI hosts (vs fixed /tmp/launch_body).
+    LAUNCH_BODY=$(mktemp)
+    RESP=$(curl -sS -X POST "http://localhost:${FASTAPI_HOST_PORT}/api/admin/runs/hello-world" \
+      -w '\n%{http_code}' -o "$LAUNCH_BODY")
+    STATUS_CODE=$(echo "$RESP" | tail -n1)
+    BODY=$(cat "$LAUNCH_BODY")
+    rm -f "$LAUNCH_BODY"
+    test "$STATUS_CODE" = "201" || { echo "FAIL: expected 201 got $STATUS_CODE: $BODY"; exit 1; }
+    RUN_ID=$(echo "$BODY" | python3 -c "
+import json, sys
+body = json.load(sys.stdin)
+assert 'dagster_run_id' in body, f'missing dagster_run_id key: {body}'
+assert body['dagster_run_id'], f'dagster_run_id is empty: {body}'
+print(body['dagster_run_id'], end='')
+")
+    test -n "$RUN_ID" || { echo "FAIL: no dagster_run_id returned from trigger"; exit 1; }
+    echo "  triggered run: $RUN_ID"
+
+    echo "--- runs V1: poll GET /api/runs/{run_id} until success or timeout ---"
+    STATUS="unknown"
+    STATUS_BODY=$(mktemp)
+    for i in $(seq 1 60); do
+      RESP=$(curl -sS "http://localhost:${FASTAPI_HOST_PORT}/api/runs/${RUN_ID}" \
+        -w '\n%{http_code}' -o "$STATUS_BODY")
+      STATUS_CODE=$(echo "$RESP" | tail -n1)
+      BODY=$(cat "$STATUS_BODY")
+      test "$STATUS_CODE" = "200" || { echo "GET /api/runs/$RUN_ID -> $STATUS_CODE: $BODY"; rm -f "$STATUS_BODY"; exit 1; }
+      STATUS=$(echo "$BODY" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status','unknown'), end='')")
+      [ "$STATUS" = "success" ] && break
+      [ "$STATUS" = "failure" ] && { echo "FAIL: hello-world run reached failure status: $BODY"; rm -f "$STATUS_BODY"; exit 1; }
+      sleep 1
+    done
+    rm -f "$STATUS_BODY"
+    test "$STATUS" = "success" || { echo "FAIL: timeout waiting for success (last status=$STATUS)"; exit 1; }
+    echo "  V1 OK: hello-world run reached success in ~${i}s"
+
+    echo "--- runs V2: gateway boundary — no raw httpx import outside gateway module ---"
+    # Covers both 'import httpx' and 'from httpx import ...' import forms.
+    # apps/api/tests/ is outside the grep root (dataplat_api/) so no test-exclusion
+    # clause is needed.
+    # NOTE: This same stronger pattern should also be applied to the existing
+    # dagster) layer's boundary grep when that layer is next revised — keeping
+    # the boundary check uniform across both layers (INFO, not a blocker for F-005).
+    RAW_HTTPX=$(grep -rln -E '(import httpx|from httpx import)' \
+      apps/api/dataplat_api --include='*.py' \
+      | grep -v 'dataplat_api/dagster/' \
+      || true)
+    test -z "$RAW_HTTPX" || { echo "FAIL: raw httpx import outside gateway: $RAW_HTTPX"; exit 1; }
+    echo "  V2 OK: gateway boundary intact"
+    ;;
   all)
     bash "$0" infra
     bash "$0" backend
@@ -235,6 +297,7 @@ print('  V2 OK (post-restart): dagster_version =', body['dagster_version'])
     bash "$0" migration
     bash "$0" buckets
     bash "$0" dagster
+    bash "$0" runs
     ;;
   *)
     echo "Unknown layer: $LAYER" >&2

@@ -1,4 +1,4 @@
-"""FastAPI application entry point — S004-F-004.
+"""FastAPI application entry point — S004-F-004 / S005-F-005.
 
 Lifespan initialises shared resources (DagsterGateway) once at startup and
 tears them down cleanly on shutdown.
@@ -13,6 +13,7 @@ from dataplat_api.config import settings
 from dataplat_api.dagster.gateway import DagsterGateway
 from dataplat_api.routers.admin import router as admin_router
 from dataplat_api.routers.health import router as health_router
+from dataplat_api.routers.runs import admin_runs_router, runs_router
 
 
 @asynccontextmanager
@@ -33,3 +34,5 @@ app = FastAPI(title="Dataplat API", version="0.1.0", lifespan=lifespan)
 
 app.include_router(health_router)
 app.include_router(admin_router)
+app.include_router(admin_runs_router)
+app.include_router(runs_router)
