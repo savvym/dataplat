@@ -120,12 +120,61 @@ case "$LAYER" in
     run "cd plugins/$PLUGIN_NAME && uv run pytest -q"
     run "cd plugins/$PLUGIN_NAME && uv run ruff check ."
     ;;
+  buckets)
+    # F-003: MinIO bucket initialisation verification
+    COMPOSE="docker/docker-compose.dev.yml"
+    [[ -f "$COMPOSE" ]] || { echo "no $COMPOSE yet"; exit 0; }
+
+    MINIO_USER="${MINIO_ROOT_USER:-minioadmin}"
+    MINIO_PASS="${MINIO_ROOT_PASSWORD:-devpassword}"
+
+    echo "--- buckets V1: all 5 buckets present ---"
+    # grep -qxF: exact whole-line match prevents 'sources_backup' satisfying
+    # the 'sources' check. MC_HOST_chk keeps credentials out of CLI args.
+    # NOTE: if MINIO_ROOT_PASSWORD ever contains URL-special chars (@, :, /, ?, #),
+    # switch to `mc alias set` with --api S3v4 and pass creds via STDIN instead.
+    # NOTE: 'documents-vlm' uses a hyphen (not underscore) — S3/MinIO bucket
+    # names prohibit underscores. This maps to design doc's 'documents_vlm'.
+    # --entrypoint sh overrides the minio-init service's init-buckets.sh so
+    # we get a plain mc ls instead of re-running bucket creation.
+    BUCKET_LIST=$(docker compose -f "$COMPOSE" run --rm -T \
+      --entrypoint sh \
+      -e MC_HOST_chk="http://${MINIO_USER}:${MINIO_PASS}@minio:9000" \
+      minio-init \
+      -c "mc ls chk/" 2>/dev/null | awk '{print $NF}')
+    for BUCKET in sources documents documents-vlm lance datasets; do
+      echo "${BUCKET_LIST}" | grep -qxF "${BUCKET}/" \
+        || { echo "FAIL: bucket '${BUCKET}' not found"; exit 1; }
+      echo "  bucket ${BUCKET}: OK"
+    done
+
+    echo "--- buckets V2: upload/head/delete test object to sources bucket ---"
+    # Credentials via -e flags (not string interpolation) to avoid breakage
+    # if credentials contain shell-special characters.
+    # IMPORTANT: 'test.txt' is a flat key for verification ONLY.
+    # Production code (F-011+) MUST use CAS paths (sha256(content) layout)
+    # per CLAUDE.md hard invariant #2 and CAL-5.
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      fastapi python -c "
+import boto3, os, sys
+s3 = boto3.client('s3', endpoint_url='http://minio:9000',
+    aws_access_key_id=os.environ['S3_USER'],
+    aws_secret_access_key=os.environ['S3_PASS'])
+s3.put_object(Bucket='sources', Key='test.txt', Body=b'hello-dataplat')
+s3.head_object(Bucket='sources', Key='test.txt')
+s3.delete_object(Bucket='sources', Key='test.txt')
+print('OK')
+sys.exit(0)
+" || { echo "FAIL: SDK upload/head/delete cycle failed"; exit 1; }
+    ;;
   all)
     bash "$0" infra
     bash "$0" backend
     bash "$0" frontend
     bash "$0" contract
     bash "$0" migration
+    bash "$0" buckets
     ;;
   *)
     echo "Unknown layer: $LAYER" >&2

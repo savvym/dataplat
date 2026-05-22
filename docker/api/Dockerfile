@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir \
     asyncpg==0.30.0 \
     alembic==1.14.1 \
     "pydantic-settings==2.7.0" \
+    "aioboto3==15.5.0" \
     && pip install --no-cache-dir -e .
 
 # Default command (compose overrides this to add --reload + bind mount)

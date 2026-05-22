@@ -1,5 +1,5 @@
 # docker/docker-compose.dev.yml
-# Dataplat dev stack — 9 services.
+# Dataplat dev stack — 11 services (9 original + minio-init added S003-F-003).
 # Usage: docker compose -f docker/docker-compose.dev.yml up -d
 #
 # Port assignments (HOST:CONTAINER):
@@ -63,9 +63,9 @@ services:
     restart: unless-stopped
 
   # ── 3. MinIO ─────────────────────────────────────────────────────────────
-  # No compose healthcheck — the minio image does not ship wget or curl.
-  # MinIO liveness is verified externally by the verifier (V4: curl localhost:9001).
-  # A proper healthcheck using `mc ready` is added in F-003.
+  # Healthcheck uses curl (confirmed at /bin/curl in this image; mc and wget
+  # are NOT present in the minio/minio server image — mc lives in minio/mc).
+  # /minio/health/live returns 200 when the S3 API is accepting requests.
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     env_file: .env.example
@@ -78,7 +78,36 @@ services:
     ports:
       - "${MINIO_API_HOST_PORT:-19000}:9000"   # S3-compatible API
       - "${MINIO_CONSOLE_HOST_PORT:-19001}:9001"   # web console (V4)
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     restart: unless-stopped
+
+  # ── 3a. MinIO bucket init ─────────────────────────────────────────────────
+  # One-shot service: waits for minio healthy, creates 5 buckets, exits 0.
+  # restart: "no" must be quoted — unquoted `no` is boolean false in YAML 1.1.
+  # minio/mc tag RELEASE.2025-04-16T18-13-26Z confirmed on Docker Hub
+  # (digest sha256:aead63c77f9db9107f1696fb08ecb0faeda23729cde94b0f663edf4fe09728e3).
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    env_file: .env.example
+    environment:
+      # MC_HOST_<alias> is the mc env-var alias syntax; credentials stay
+      # out of command-line arguments. Alias name "init" is local to this
+      # container and need not match the alias used in checks.sh V1.
+      # NOTE: if MINIO_ROOT_PASSWORD ever contains URL-special chars
+      # (@, :, /, ?, #), switch to `mc alias set` with --api S3v4 instead.
+      MC_HOST_init: "http://${MINIO_ROOT_USER:-minioadmin}:${MINIO_ROOT_PASSWORD:-devpassword}@minio:9000"
+    volumes:
+      - ./minio/init-buckets.sh:/init-buckets.sh:ro
+    entrypoint: ["/bin/sh", "/init-buckets.sh"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
 
   # ── 4. Dagster webserver ──────────────────────────────────────────────────
   # Port :3000 = Dagster webserver (GraphQL API + /dagster_version).
@@ -178,6 +207,8 @@ services:
   # ── 8. FastAPI ────────────────────────────────────────────────────────────
   # Does NOT depend on dagster-webserver this sprint (DagsterGateway is F-004).
   # Bind-mounts apps/api/ for live --reload during development.
+  # Depends on minio-init completing so all 5 buckets are guaranteed present
+  # before any route can run (prevents F-011 race conditions).
   fastapi:
     build:
       context: ..
@@ -187,6 +218,9 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-devpassword}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-platform}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       DAGSTER_GRAPHQL: ${DAGSTER_GRAPHQL:-http://dagster-webserver:3000/graphql}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-devpassword}
     command: uvicorn dataplat_api.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       # Bind mount for live reload — the image's COPY is the fallback at build time
@@ -196,6 +230,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz', timeout=3).status == 200 else 1)\""]
       interval: 5s

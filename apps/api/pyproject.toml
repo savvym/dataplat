@@ -17,6 +17,10 @@ dependencies = [
     # Added S002-F-002: Alembic migrations + settings management
     "alembic==1.14.1",
     "pydantic-settings==2.7.0",
+    # Added S003-F-003: async S3 client (aioboto3 pulls in boto3 as transitive dep)
+    # boto3 used for sync verification in checks.sh; aioboto3 used for async
+    # production uploads starting F-011.
+    "aioboto3==15.5.0",
 ]
 
 [tool.hatch.build.targets.wheel]
