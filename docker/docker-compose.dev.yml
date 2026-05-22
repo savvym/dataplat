@@ -205,10 +205,11 @@ services:
     restart: unless-stopped
 
   # ── 8. FastAPI ────────────────────────────────────────────────────────────
-  # Does NOT depend on dagster-webserver this sprint (DagsterGateway is F-004).
   # Bind-mounts apps/api/ for live --reload during development.
   # Depends on minio-init completing so all 5 buckets are guaranteed present
   # before any route can run (prevents F-011 race conditions).
+  # Depends on dagster-webserver healthy (added S004-F-004) so DagsterGateway
+  # can reach the GraphQL endpoint immediately after startup.
   fastapi:
     build:
       context: ..
@@ -217,7 +218,8 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-devpassword}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-platform}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      DAGSTER_GRAPHQL: ${DAGSTER_GRAPHQL:-http://dagster-webserver:3000/graphql}
+      # Renamed from DAGSTER_GRAPHQL in S004-F-004; matches Settings.DAGSTER_GRAPHQL_URL
+      DAGSTER_GRAPHQL_URL: ${DAGSTER_GRAPHQL_URL:-http://dagster-webserver:3000/graphql}
       MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-devpassword}
@@ -232,6 +234,8 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+      dagster-webserver:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz', timeout=3).status == 200 else 1)\""]
       interval: 5s

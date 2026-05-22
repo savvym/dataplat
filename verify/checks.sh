@@ -168,6 +168,65 @@ print('OK')
 sys.exit(0)
 " || { echo "FAIL: SDK upload/head/delete cycle failed"; exit 1; }
     ;;
+  dagster)
+    # F-004: DagsterGateway + GET /api/admin/dagster-status
+    # Runs from repo root (same assumption as all other layers — no cd).
+    COMPOSE="docker/docker-compose.dev.yml"
+    [[ -f "$COMPOSE" ]] || { echo "no $COMPOSE yet"; exit 0; }
+
+    FASTAPI_HOST_PORT="${FASTAPI_HOST_PORT:-18000}"
+
+    echo "--- dagster V1: GET /api/admin/dagster-status returns 200 with dagster_version ---"
+    # Curl output piped directly into python3 stdin — never captured into a
+    # shell variable.  This avoids shell injection / Python syntax breakage
+    # from any single-quote, backslash, or $ in the response body.
+    curl -fsS "http://localhost:${FASTAPI_HOST_PORT}/api/admin/dagster-status" \
+      | python3 -c "
+import json, sys
+body = json.load(sys.stdin)
+assert 'dagster_version' in body, f'missing dagster_version key: {body}'
+assert len(body['dagster_version']) > 0, f'dagster_version is empty: {body}'
+print('  V1 OK: dagster_version =', body['dagster_version'])
+" || { echo "FAIL: V1 check failed (non-200, connection refused, or assertion error)"; exit 1; }
+
+    echo "--- dagster boundary: no raw httpx->dagster calls outside gateway module ---"
+    # Grep for httpx.(get|post|AsyncClient) on the same line as "dagster"
+    # in any .py file NOT under dataplat_api/dagster/.
+    # Runs from repo root; paths are relative to CWD.
+    BAD_CALLS=$(grep -rn --include='*.py' -E 'httpx\.(get|post|AsyncClient)' \
+      apps/api/dataplat_api/ \
+      | grep -i 'dagster' \
+      | grep -v 'apps/api/dataplat_api/dagster/' \
+      || true)
+    if [[ -n "$BAD_CALLS" ]]; then
+      echo "FAIL: raw httpx call to Dagster outside gateway module:"
+      echo "$BAD_CALLS"
+      exit 1
+    fi
+    echo "  gateway boundary check: OK"
+
+    echo "--- dagster V2: restart fastapi container; route still returns 200 ---"
+    docker compose -f "$COMPOSE" restart fastapi
+
+    # Wait for fastapi healthy (max 30s; python urllib avoids curl-in-container dep)
+    READY=0
+    for i in $(seq 1 30); do
+      docker compose -f "$COMPOSE" exec -T fastapi \
+        python -c "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz', timeout=2).getcode()==200 else 1)" \
+        2>/dev/null && { READY=1; break; }
+      sleep 1
+    done
+    [[ "$READY" == "1" ]] || { echo "FAIL: fastapi did not become healthy after restart"; exit 1; }
+
+    curl -fsS "http://localhost:${FASTAPI_HOST_PORT}/api/admin/dagster-status" \
+      | python3 -c "
+import json, sys
+body = json.load(sys.stdin)
+assert 'dagster_version' in body, f'missing dagster_version key: {body}'
+assert len(body['dagster_version']) > 0, f'dagster_version is empty: {body}'
+print('  V2 OK (post-restart): dagster_version =', body['dagster_version'])
+" || { echo "FAIL: V2 check failed after restart"; exit 1; }
+    ;;
   all)
     bash "$0" infra
     bash "$0" backend
@@ -175,6 +234,7 @@ sys.exit(0)
     bash "$0" contract
     bash "$0" migration
     bash "$0" buckets
+    bash "$0" dagster
     ;;
   *)
     echo "Unknown layer: $LAYER" >&2

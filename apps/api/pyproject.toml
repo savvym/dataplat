@@ -21,6 +21,9 @@ dependencies = [
     # boto3 used for sync verification in checks.sh; aioboto3 used for async
     # production uploads starting F-011.
     "aioboto3==15.5.0",
+    # Added S004-F-004: async HTTP client for DagsterGateway
+    # Not a transitive dep of FastAPI — must be explicit.
+    "httpx==0.28.1",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -30,4 +33,9 @@ packages = ["dataplat_api"]
 dev = [
     "mypy>=2.1.0",
     "ruff>=0.15.14",
+    # Added S004-F-004: async test tooling for route tests
+    "pytest>=9.0.1",
+    "pytest-asyncio>=1.3.0",
+    # httpx is already in [project.dependencies]; re-listed here for clarity
+    # as the FastAPI TestClient / ASGITransport use it for test requests.
 ]
