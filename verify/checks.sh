@@ -85,9 +85,34 @@ case "$LAYER" in
     ;;
   migration)
     exists apps/api/alembic || { echo "no alembic yet"; exit 0; }
-    run "cd apps/api && uv run alembic upgrade head"
-    run "cd apps/api && uv run alembic downgrade -1"
-    run "cd apps/api && uv run alembic upgrade head"
+    COMPOSE="docker/docker-compose.dev.yml"
+    [[ -f "$COMPOSE" ]] || { echo "no $COMPOSE — stack not available"; exit 1; }
+    API="docker compose -f $COMPOSE exec -T fastapi"
+    PG="docker compose -f $COMPOSE exec -T postgres"
+
+    echo "--- migration pre-flight: alembic installed in fastapi container ---"
+    # The fastapi container installs via pip (not uv), so alembic is on PATH directly.
+    $API alembic --version \
+      || { echo "FAIL: alembic not in fastapi container — run: docker compose -f $COMPOSE build fastapi && docker compose -f $COMPOSE up -d fastapi"; exit 1; }
+
+    echo "--- migration V1: upgrade head exits 0 ---"
+    run "$API alembic upgrade head"
+
+    echo "--- migration V2: all 8 tables present ---"
+    for TABLE in users source_collection source document_variant operator recipe dataset run; do
+      $PG psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='$TABLE'" \
+        | grep -q '^1$' \
+        || { echo "FAIL: table '$TABLE' not found"; exit 1; }
+      echo "  table $TABLE: OK"
+    done
+
+    echo "--- migration V3: idempotent re-run ---"
+    run "$API alembic upgrade head"
+
+    echo "--- migration V4-extra: downgrade base + upgrade head round-trip ---"
+    run "$API alembic downgrade base"
+    run "$API alembic upgrade head"
     ;;
   plugin)
     PLUGIN_NAME="${1:?usage: checks.sh plugin <name>}"

@@ -17,7 +17,10 @@ RUN pip install --no-cache-dir \
     fastapi==0.115.12 \
     "uvicorn[standard]==0.34.2" \
     "sqlalchemy[asyncio]==2.0.41" \
-    asyncpg==0.30.0
+    asyncpg==0.30.0 \
+    alembic==1.14.1 \
+    "pydantic-settings==2.7.0" \
+    && pip install --no-cache-dir -e .
 
 # Default command (compose overrides this to add --reload + bind mount)
 CMD ["uvicorn", "dataplat_api.main:app", "--host", "0.0.0.0", "--port", "8000"]
