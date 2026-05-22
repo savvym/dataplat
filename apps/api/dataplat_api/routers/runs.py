@@ -1,15 +1,15 @@
-"""Runs router — S005-F-005.
+"""Runs router — S005-F-005, extended S008-F-008.
 
 Provides two API surfaces for Dagster run management:
 
   admin_runs_router (prefix="/api/admin/runs", tags=["admin", "runs"]):
     POST /hello-world  — trigger the hello_world smoke job (HTTP 201 Created)
-    TODO(F-008): require admin role on this router once JWT middleware is wired.
+    Protected by JWT Bearer auth (F-008).
     TODO(F-018): add POST /api/runs (generic trigger with source_ids + auth).
 
   runs_router (prefix="/api/runs", tags=["runs"]):
     GET  /{run_id}     — poll current status of a Dagster run (HTTP 200)
-    TODO(F-008): require auth on this router.
+    Protected by JWT Bearer auth (F-008).
 
 Deferrals:
   - Generic POST /api/runs surface: F-018 (requires auth + source context).
@@ -25,12 +25,14 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
+from dataplat_api.auth.dependencies import get_current_user
 from dataplat_api.dagster.dependencies import get_dagster_gateway
 from dataplat_api.dagster.gateway import (
     DagsterGateway,
     DagsterGatewayError,
     DagsterRunNotFoundError,
 )
+from dataplat_api.db.models import User
 from dataplat_api.schemas.runs import LaunchHelloWorldResponse, RunStatusResponse
 
 # ── Admin router: admin-only run management operations ───────────────────────
@@ -51,11 +53,12 @@ runs_router = APIRouter(prefix="/api/runs", tags=["runs"])
         "Launch the hello_world_job in Dagster and return the assigned run ID. "
         "Each POST creates a new Dagster run (no idempotency / dedup). "
         "This is an admin smoke endpoint — not the generic run trigger (see F-018). "
-        "TODO(F-008): require admin role."
+        "Requires a valid Bearer JWT (F-008)."
     ),
 )
 async def launch_hello_world(
     gateway: DagsterGateway = Depends(get_dagster_gateway),
+    current_user: User = Depends(get_current_user),
 ) -> LaunchHelloWorldResponse:
     """Trigger the hello_world_job in Dagster (admin smoke test).
 
@@ -63,8 +66,7 @@ async def launch_hello_world(
     but may not have started yet — poll GET /api/runs/{run_id} for status.
 
     Returns 503 if Dagster is unreachable or the launchRun mutation fails.
-
-    TODO(F-008): add JWT admin-role dependency here.
+    Requires a valid Bearer JWT (F-008).
     """
     try:
         run_id = await gateway.launch_hello_world()
@@ -85,12 +87,13 @@ async def launch_hello_world(
         "Queries Dagster directly — the local `run` Postgres table is not used "
         "(that requires auth context from F-008/F-018). "
         "Status values: 'running', 'success', 'failure'. "
-        "TODO(F-008): require auth."
+        "Requires a valid Bearer JWT (F-008)."
     ),
 )
 async def get_run_status(
     run_id: str,
     gateway: DagsterGateway = Depends(get_dagster_gateway),
+    current_user: User = Depends(get_current_user),
 ) -> RunStatusResponse:
     """Return the current Dagster run status (non-blocking poll).
 
@@ -100,8 +103,7 @@ async def get_run_status(
 
     DagsterRunNotFoundError is caught BEFORE DagsterGatewayError
     (because it is a subclass — catching the base class first would swallow 404s).
-
-    TODO(F-008): add JWT dependency here.
+    Requires a valid Bearer JWT (F-008).
     """
     try:
         result = await gateway.get_run_status(run_id)

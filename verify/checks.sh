@@ -205,11 +205,24 @@ sys.exit(0)
 
     FASTAPI_HOST_PORT="${FASTAPI_HOST_PORT:-18000}"
 
+    echo "--- dagster: mint Bearer token for protected routes ---"
+    DAGSTER_TOKEN_BODY=$(mktemp)
+    DAGSTER_TOKEN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/auth/token" \
+      -d "username=admin@example.com&password=testpassword123" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -w '%{http_code}' -o "$DAGSTER_TOKEN_BODY")
+    test "$DAGSTER_TOKEN_STATUS" = "200" \
+      || { echo "FAIL: dagster) could not mint auth token (status $DAGSTER_TOKEN_STATUS) — run 'bash $0 auth' first"; rm -f "$DAGSTER_TOKEN_BODY"; exit 1; }
+    DAGSTER_TOKEN=$(python3 -c "import json; print(json.load(open('$DAGSTER_TOKEN_BODY'))['access_token'])")
+    rm -f "$DAGSTER_TOKEN_BODY"
+
     echo "--- dagster V1: GET /api/admin/dagster-status returns 200 with dagster_version ---"
     # Curl output piped directly into python3 stdin — never captured into a
     # shell variable.  This avoids shell injection / Python syntax breakage
     # from any single-quote, backslash, or $ in the response body.
-    curl -fsS "http://localhost:${FASTAPI_HOST_PORT}/api/admin/dagster-status" \
+    curl -fsS -H "Authorization: Bearer $DAGSTER_TOKEN" \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/admin/dagster-status" \
       | python3 -c "
 import json, sys
 body = json.load(sys.stdin)
@@ -247,7 +260,8 @@ print('  V1 OK: dagster_version =', body['dagster_version'])
     done
     [[ "$READY" == "1" ]] || { echo "FAIL: fastapi did not become healthy after restart"; exit 1; }
 
-    curl -fsS "http://localhost:${FASTAPI_HOST_PORT}/api/admin/dagster-status" \
+    curl -fsS -H "Authorization: Bearer $DAGSTER_TOKEN" \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/admin/dagster-status" \
       | python3 -c "
 import json, sys
 body = json.load(sys.stdin)
@@ -263,6 +277,18 @@ print('  V2 OK (post-restart): dagster_version =', body['dagster_version'])
 
     FASTAPI_HOST_PORT="${FASTAPI_HOST_PORT:-18000}"
 
+    echo "--- runs: mint Bearer token for protected routes ---"
+    RUNS_TOKEN_BODY=$(mktemp)
+    RUNS_TOKEN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/auth/token" \
+      -d "username=admin@example.com&password=testpassword123" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -w '%{http_code}' -o "$RUNS_TOKEN_BODY")
+    test "$RUNS_TOKEN_STATUS" = "200" \
+      || { echo "FAIL: runs) could not mint auth token (status $RUNS_TOKEN_STATUS) — run 'bash $0 auth' first"; rm -f "$RUNS_TOKEN_BODY"; exit 1; }
+    RUNS_TOKEN=$(python3 -c "import json; print(json.load(open('$RUNS_TOKEN_BODY'))['access_token'])")
+    rm -f "$RUNS_TOKEN_BODY"
+
     echo "--- runs V1: trigger hello-world job via FastAPI ---"
     # 2-step pattern: capture body to a temp file, write status code to RESP.
     # This ensures non-201 responses print the body for debugging rather than
@@ -271,6 +297,7 @@ print('  V2 OK (post-restart): dagster_version =', body['dagster_version'])
     # mktemp avoids clobber risk on shared CI hosts (vs fixed /tmp/launch_body).
     LAUNCH_BODY=$(mktemp)
     RESP=$(curl -sS -X POST "http://localhost:${FASTAPI_HOST_PORT}/api/admin/runs/hello-world" \
+      -H "Authorization: Bearer $RUNS_TOKEN" \
       -w '\n%{http_code}' -o "$LAUNCH_BODY")
     STATUS_CODE=$(echo "$RESP" | tail -n1)
     BODY=$(cat "$LAUNCH_BODY")
@@ -291,6 +318,7 @@ print(body['dagster_run_id'], end='')
     STATUS_BODY=$(mktemp)
     for i in $(seq 1 60); do
       RESP=$(curl -sS "http://localhost:${FASTAPI_HOST_PORT}/api/runs/${RUN_ID}" \
+        -H "Authorization: Bearer $RUNS_TOKEN" \
         -w '\n%{http_code}' -o "$STATUS_BODY")
       STATUS_CODE=$(echo "$RESP" | tail -n1)
       BODY=$(cat "$STATUS_BODY")
@@ -365,6 +393,53 @@ print('  V2 OK: access_token present, token_type=bearer')
     test "$STATUS" = "401" \
       || { echo "FAIL: auth V3 wrong password returned $STATUS (expected 401)"; exit 1; }
     echo "auth V3 wrong password: OK"
+
+    echo "--- auth V4: GET /api/sources/collections without token → 401 ---"
+    STATUS=$(curl -sS -o /dev/null -w '%{http_code}' \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/collections")
+    test "$STATUS" = "401" \
+      || { echo "FAIL: auth V4 returned $STATUS (expected 401)"; exit 1; }
+    echo "auth V4 no-token 401: OK"
+
+    echo "--- auth V5: GET /api/sources/collections with valid token → 200 ---"
+    TOKEN_BODY=$(mktemp)
+    RESP=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/auth/token" \
+      -d "username=admin@example.com&password=testpassword123" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -w '\n%{http_code}' -o "$TOKEN_BODY")
+    STATUS_CODE=$(echo "$RESP" | tail -n1)
+    test "$STATUS_CODE" = "200" \
+      || { echo "FAIL: auth V5 could not mint token (status $STATUS_CODE): $(cat "$TOKEN_BODY")"; rm -f "$TOKEN_BODY"; exit 1; }
+    TOKEN=$(python3 -c "import json; print(json.load(open('$TOKEN_BODY'))['access_token'])")
+    rm -f "$TOKEN_BODY"
+
+    STATUS=$(curl -sS -o /dev/null -w '%{http_code}' \
+      -H "Authorization: Bearer $TOKEN" \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/collections")
+    test "$STATUS" = "200" \
+      || { echo "FAIL: auth V5 returned $STATUS (expected 200)"; exit 1; }
+    echo "auth V5 valid-token 200: OK"
+
+    echo "--- auth V6: GET /api/sources/collections with expired token → 401 ---"
+    EXPIRED_TOKEN=$(docker compose -f "$COMPOSE" exec -T fastapi \
+      python -c "
+import jwt, time, os
+payload = {
+    'sub': '1',
+    'email': 'admin@example.com',
+    'iat': int(time.time()) - 7200,
+    'exp': int(time.time()) - 3600,
+}
+token = jwt.encode(payload, os.environ['SECRET_KEY'], algorithm='HS256')
+print(token, end='')
+")
+    STATUS=$(curl -sS -o /dev/null -w '%{http_code}' \
+      -H "Authorization: Bearer $EXPIRED_TOKEN" \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/collections")
+    test "$STATUS" = "401" \
+      || { echo "FAIL: auth V6 expired token returned $STATUS (expected 401)"; exit 1; }
+    echo "auth V6 expired-token 401: OK"
     ;;
   all)
     # smoke first: cheapest check, fails fast if stack is not up at all.

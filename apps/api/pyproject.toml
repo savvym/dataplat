@@ -40,7 +40,8 @@ packages = ["dataplat_api"]
 markers = [
     "integration: marks tests that require a live compose stack (deselect with -m 'not integration')",
 ]
-# Skip integration tests by default; run with RUN_INTEGRATION_TESTS=1 to include them.
+# Integration tests are excluded by default; to include them, run
+# `pytest -m integration` or remove the -m filter from addopts.
 addopts = "-m 'not integration'"
 
 [dependency-groups]

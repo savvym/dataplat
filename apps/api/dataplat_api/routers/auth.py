@@ -1,6 +1,8 @@
 """Auth router — S007-F-007.
 
 Provides POST /api/auth/token: validates credentials and issues a JWT.
+This route is intentionally PUBLIC — it is the token issuer; all other routes
+consume the JWT via get_current_user (dataplat_api.auth.dependencies).
 
 Design decisions (see contracts/S007-F-007/agreed.md §4):
   - Password hashing: direct bcrypt (passlib dropped — incompatible with bcrypt>=4.0).
@@ -11,8 +13,6 @@ Design decisions (see contracts/S007-F-007/agreed.md §4):
     Swagger "Try it out" compatibility and F-008 OAuth2PasswordBearer plug-in.
   - Timing safety: _DUMMY_HASH ensures bcrypt.checkpw() runs even when the
     user is not found, preventing timing-based email enumeration attacks.
-
-TODO(F-008): add JWT dependency/middleware to enforce auth on other routes.
 """
 
 from __future__ import annotations
@@ -48,8 +48,7 @@ _DUMMY_HASH: bytes = bcrypt.hashpw(b"dummy", bcrypt.gensalt(rounds=12))
         "Returns a signed HS256 JWT on success. "
         "Returns HTTP 401 for incorrect credentials (same message whether the "
         "user is not found or the password is wrong — prevents email enumeration). "
-        "TODO(F-008): downstream routes will require Bearer <token> once JWT "
-        "middleware is wired."
+        "Public route — all other API routes require Bearer <token> (F-008)."
     ),
 )
 async def login(

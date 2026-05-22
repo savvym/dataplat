@@ -1,4 +1,5 @@
-"""Tests for POST /api/admin/runs/hello-world and GET /api/runs/{run_id} — S005-F-005.
+"""Tests for POST /api/admin/runs/hello-world and GET /api/runs/{run_id} — S005-F-005,
+extended S008-F-008.
 
 Uses FastAPI's TestClient (sync ASGI wrapper) with DagsterGateway methods
 patched via unittest.mock.AsyncMock. No live Dagster instance required.
@@ -7,6 +8,9 @@ The conftest.py autouse `_patch_httpx_no_ssl` fixture applies to all tests here 
 it patches httpx.AsyncClient to use MockTransport, bypassing SSL initialisation.
 Gateway methods are additionally mocked at the method level per test, so no real
 HTTP call is ever attempted against Dagster.
+
+S008-F-008: Both routes are now protected by JWT. Tests override `get_current_user`
+to bypass JWT validation — the auth enforcement itself is tested in test_auth.py.
 
 NOTE for future test authors: if a test needs a real HTTP call through the
 TestClient (e.g. to test middleware), the httpx.MockTransport from conftest.py
@@ -23,8 +27,17 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from dataplat_api.auth.dependencies import get_current_user
 from dataplat_api.dagster.gateway import DagsterGatewayError, DagsterRunNotFoundError
+from dataplat_api.db.models import User
 from dataplat_api.main import app
+
+# Shared mock user for auth override across all tests in this module.
+_MOCK_USER = User(id=1, email="test@example.com", hashed_password="$2b$12$hash")
+
+
+async def _override_current_user() -> User:
+    return _MOCK_USER
 
 
 @pytest.fixture()
@@ -35,9 +48,16 @@ def client() -> TestClient:
     `app.state.dagster_gateway`. The conftest.py `_patch_httpx_no_ssl` autouse
     fixture ensures the httpx.AsyncClient inside DagsterGateway is constructed
     without an SSL context.
+
+    get_current_user is overridden to bypass JWT validation for all tests in
+    this module — auth enforcement is covered by test_auth.py.
     """
-    with TestClient(app) as c:
-        yield c
+    app.dependency_overrides[get_current_user] = _override_current_user
+    try:
+        with TestClient(app) as c:
+            yield c
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 # ── POST /api/admin/runs/hello-world ─────────────────────────────────────────

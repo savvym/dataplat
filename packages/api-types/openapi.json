@@ -32,7 +32,7 @@
           "admin"
         ],
         "summary": "Dagster Status",
-        "description": "Return the running Dagster version.\n\nCalls the Dagster GraphQL endpoint via DagsterGateway. Returns 503 if\nDagster is unreachable or returns an unexpected response.\n\nTODO(F-008): add JWT dependency here once auth middleware is wired.",
+        "description": "Return the running Dagster version.\n\nCalls the Dagster GraphQL endpoint via DagsterGateway. Returns 503 if\nDagster is unreachable or returns an unexpected response.\nRequires a valid Bearer JWT (F-008).",
         "operationId": "dagster_status_api_admin_dagster_status_get",
         "responses": {
           "200": {
@@ -45,7 +45,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
       }
     },
     "/api/admin/runs/hello-world": {
@@ -55,7 +60,7 @@
           "runs"
         ],
         "summary": "Trigger hello_world smoke job",
-        "description": "Launch the hello_world_job in Dagster and return the assigned run ID. Each POST creates a new Dagster run (no idempotency / dedup). This is an admin smoke endpoint \u2014 not the generic run trigger (see F-018). TODO(F-008): require admin role.",
+        "description": "Launch the hello_world_job in Dagster and return the assigned run ID. Each POST creates a new Dagster run (no idempotency / dedup). This is an admin smoke endpoint \u2014 not the generic run trigger (see F-018). Requires a valid Bearer JWT (F-008).",
         "operationId": "launch_hello_world_api_admin_runs_hello_world_post",
         "responses": {
           "201": {
@@ -68,7 +73,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
       }
     },
     "/api/runs/{run_id}": {
@@ -77,8 +87,13 @@
           "runs"
         ],
         "summary": "Get Dagster run status",
-        "description": "Return the current status of a Dagster run. Queries Dagster directly \u2014 the local `run` Postgres table is not used (that requires auth context from F-008/F-018). Status values: 'running', 'success', 'failure'. TODO(F-008): require auth.",
+        "description": "Return the current status of a Dagster run. Queries Dagster directly \u2014 the local `run` Postgres table is not used (that requires auth context from F-008/F-018). Status values: 'running', 'success', 'failure'. Requires a valid Bearer JWT (F-008).",
         "operationId": "get_run_status_api_runs__run_id__get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "run_id",
@@ -120,7 +135,7 @@
           "auth"
         ],
         "summary": "Obtain a JWT access token",
-        "description": "Validates email (submitted as `username`) and password via bcrypt. Returns a signed HS256 JWT on success. Returns HTTP 401 for incorrect credentials (same message whether the user is not found or the password is wrong \u2014 prevents email enumeration). TODO(F-008): downstream routes will require Bearer <token> once JWT middleware is wired.",
+        "description": "Validates email (submitted as `username`) and password via bcrypt. Returns a signed HS256 JWT on success. Returns HTTP 401 for incorrect credentials (same message whether the user is not found or the password is wrong \u2014 prevents email enumeration). Public route \u2014 all other API routes require Bearer <token> (F-008).",
         "operationId": "login_api_auth_token_post",
         "requestBody": {
           "content": {
@@ -154,6 +169,33 @@
             }
           }
         }
+      }
+    },
+    "/api/sources/collections": {
+      "get": {
+        "tags": [
+          "sources"
+        ],
+        "summary": "List Collections",
+        "description": "List source collections.\n\nStub \u2014 body owned by F-010. Auth enforcement is the F-008 deliverable.\nF-010 will add pagination parameters and a real DB query here.",
+        "operationId": "list_collections_api_sources_collections_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionListResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
       }
     }
   },
@@ -215,6 +257,25 @@
           "password"
         ],
         "title": "Body_login_api_auth_token_post"
+      },
+      "CollectionListResponse": {
+        "properties": {
+          "items": {
+            "items": {},
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "CollectionListResponse"
       },
       "DagsterStatusResponse": {
         "properties": {
@@ -332,6 +393,17 @@
           "type"
         ],
         "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "OAuth2PasswordBearer": {
+        "type": "oauth2",
+        "flows": {
+          "password": {
+            "scopes": {},
+            "tokenUrl": "/api/auth/token"
+          }
+        }
       }
     }
   }
