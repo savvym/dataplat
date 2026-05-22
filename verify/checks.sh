@@ -441,6 +441,63 @@ print(token, end='')
       || { echo "FAIL: auth V6 expired token returned $STATUS (expected 401)"; exit 1; }
     echo "auth V6 expired-token 401: OK"
     ;;
+  collections)
+    # F-009: POST /api/sources/collections — create, 201/409 verification + owner_id
+    COMPOSE="docker/docker-compose.dev.yml"
+    [[ -f "$COMPOSE" ]] || { echo "no $COMPOSE yet"; exit 0; }
+
+    FASTAPI_HOST_PORT="${FASTAPI_HOST_PORT:-18000}"
+
+    echo "--- collections: mint Bearer token ---"
+    COLL_TOKEN_BODY=$(mktemp)
+    COLL_TOKEN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/auth/token" \
+      -d "username=admin@example.com&password=testpassword123" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -w '%{http_code}' -o "$COLL_TOKEN_BODY")
+    test "$COLL_TOKEN_STATUS" = "200" \
+      || { echo "FAIL: collections) could not mint token (status $COLL_TOKEN_STATUS) — run 'bash $0 auth' first"; rm -f "$COLL_TOKEN_BODY"; exit 1; }
+    COLL_TOKEN=$(python3 -c "import json; print(json.load(open('$COLL_TOKEN_BODY'))['access_token'])")
+    rm -f "$COLL_TOKEN_BODY"
+
+    echo "--- collections V1: POST returns 201 with id (int) and name ---"
+    COLL_BODY=$(mktemp)
+    COLL_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/collections" \
+      -H "Authorization: Bearer $COLL_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"name": "test-coll-checks", "dataset_card_md": "desc"}' \
+      -w '%{http_code}' -o "$COLL_BODY")
+    test "$COLL_STATUS" = "201" \
+      || { echo "FAIL: collections V1 returned $COLL_STATUS: $(cat "$COLL_BODY")"; rm -f "$COLL_BODY"; exit 1; }
+    python3 -c "
+import json, sys
+body = json.load(open('$COLL_BODY'))
+assert isinstance(body.get('id'), int), f'id not int: {body}'
+assert body.get('name') == 'test-coll-checks', f'name mismatch: {body}'
+print('  V1 OK: id =', body['id'], 'name =', body['name'])
+" || { echo "FAIL: collections V1 response shape incorrect"; rm -f "$COLL_BODY"; exit 1; }
+    rm -f "$COLL_BODY"
+
+    echo "--- collections V2: row exists in DB with owner_id IS NOT NULL ---"
+    docker compose -f "$COMPOSE" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "SELECT id FROM source_collection WHERE name='test-coll-checks' AND owner_id IS NOT NULL" \
+      | grep -qE '^[0-9]+$' \
+      || { echo "FAIL: collections V2 row not found or owner_id is null"; exit 1; }
+    echo "  V2 OK: row exists with non-null owner_id"
+
+    echo "--- collections V3: duplicate name returns 409 ---"
+    DUP_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/collections" \
+      -H "Authorization: Bearer $COLL_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"name": "test-coll-checks"}' \
+      -o /dev/null -w '%{http_code}')
+    test "$DUP_STATUS" = "409" \
+      || { echo "FAIL: collections V3 returned $DUP_STATUS (expected 409)"; exit 1; }
+    echo "  V3 OK: duplicate name → 409"
+    ;;
   all)
     # smoke first: cheapest check, fails fast if stack is not up at all.
     # apps/api confirmed present since F-001 passes:true.
@@ -451,6 +508,7 @@ print(token, end='')
     bash "$0" contract
     bash "$0" migration
     bash "$0" auth
+    bash "$0" collections
     bash "$0" buckets
     bash "$0" dagster
     bash "$0" runs

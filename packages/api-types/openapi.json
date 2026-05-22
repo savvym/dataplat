@@ -196,6 +196,51 @@
             "OAuth2PasswordBearer": []
           }
         ]
+      },
+      "post": {
+        "tags": [
+          "sources"
+        ],
+        "summary": "Create Source Collection",
+        "description": "Create a new source collection.\n\nCreates a source_collection row in Postgres and returns the new record.\nDuplicate names return 409 (detected via the Postgres UNIQUE constraint\n`source_collection_name_key`). Auth required (F-008).",
+        "operationId": "create_collection_api_sources_collections_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceCollectionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceCollectionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
       }
     }
   },
@@ -275,7 +320,8 @@
           "items",
           "total"
         ],
-        "title": "CollectionListResponse"
+        "title": "CollectionListResponse",
+        "description": "Response for GET /api/sources/collections \u2014 stub body owned by F-010."
       },
       "DagsterStatusResponse": {
         "properties": {
@@ -341,6 +387,102 @@
         ],
         "title": "RunStatusResponse",
         "description": "Response body for GET /api/runs/{run_id} (HTTP 200 OK).\n\nFields:\n    dagster_run_id: The Dagster run UUID (echoed from the path parameter).\n    status: Three-value internal status derived from Dagster's RunStatus enum.\n        \"running\"  \u2014 run is queued or in progress\n        \"success\"  \u2014 run completed successfully\n        \"failure\"  \u2014 run failed or was canceled"
+      },
+      "SourceCollectionCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "dataset_card_md": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Card Md"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "SourceCollectionCreate",
+        "description": "Request body for POST /api/sources/collections."
+      },
+      "SourceCollectionOut": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "dataset_card_md": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Card Md"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "owner_id",
+          "dataset_card_md",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "SourceCollectionOut",
+        "description": "Response schema for a single source_collection row.\n\nUsed by POST /api/sources/collections (F-009) and will be used by\nGET /api/sources/collections items once F-010 narrows CollectionListResponse."
       },
       "TokenResponse": {
         "properties": {
