@@ -122,7 +122,7 @@ done
 
 ## 当前进度（Phase 0–1）
 
-6/105 features 通过：
+7/105 features 通过：
 
 - **F-001** docker-compose 开发栈
 - **F-002** Postgres 基线迁移（8 张 §4.1 业务表）
@@ -130,8 +130,9 @@ done
 - **F-004** DagsterGateway 抽象 + `GET /api/admin/dagster-status`
 - **F-005** hello-world Dagster 任务 + `GET /api/runs/{run_id}`
 - **F-006** `verify/checks.sh smoke` 真正检查 API health / DB / MinIO / Dagster 四件套（lifespan 内 `SELECT 1` 探针使 `/healthz` 真正依赖 Postgres）
+- **F-007** 一次性 `seed-admin` CLI 写入 admin 用户 + `POST /api/auth/token` 颁发 JWT（bcrypt + PyJWT HS256，常量时间防枚举）
 
-下一批候选：F-007（admin user + JWT）/ F-009（source collections）。
+下一批候选：F-008（所有非公开路由强制 Bearer）。
 
 ---
 
