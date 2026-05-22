@@ -223,6 +223,10 @@ services:
       MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-devpassword}
+      # Added S007-F-007: JWT secret key. No default in Settings — fast fail if absent.
+      # The dev placeholder is safe for local development only; set a strong random
+      # value (e.g. openssl rand -hex 32) in production.
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-me}
     command: uvicorn dataplat_api.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       # Bind mount for live reload — the image's COPY is the fallback at build time

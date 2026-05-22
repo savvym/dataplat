@@ -31,6 +31,9 @@ import pytest
 # DATABASE_URL to be present in the environment at import time.
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/test")
 os.environ.setdefault("DAGSTER_GRAPHQL_URL", "http://localhost:3000/graphql")
+# Added S007-F-007: SECRET_KEY required by config.Settings (no default → fast fail).
+# Unit tests must not need a real secret; any non-empty string satisfies pydantic-settings.
+os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")
 
 from sqlalchemy.ext.asyncio import AsyncEngine  # noqa: E402
 

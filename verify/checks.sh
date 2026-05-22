@@ -103,6 +103,12 @@ case "$LAYER" in
   contract)
     exists apps/api || { echo "no apps/api yet"; exit 0; }
     exists packages/api-types || { echo "no packages/api-types yet"; exit 0; }
+    # S007-F-007: packages/api-types/ now exists (openapi.json committed) but the
+    # Makefile + pnpm TS generator are not yet wired (web sprint deferred).
+    # Without this guard, `make codegen` would fire and exit 1 on a missing Makefile,
+    # breaking the all) baseline.  Once the web sprint scaffolds the Makefile, this
+    # guard becomes inert and full TS codegen runs automatically.
+    [[ -f Makefile ]] || { echo "no Makefile yet (codegen deferred to web sprint)"; exit 0; }
     run "make codegen"
     run "git diff --exit-code packages/api-types/"
     ;;
@@ -312,6 +318,54 @@ print(body['dagster_run_id'], end='')
     test -z "$RAW_HTTPX" || { echo "FAIL: raw httpx import outside gateway: $RAW_HTTPX"; exit 1; }
     echo "  V2 OK: gateway boundary intact"
     ;;
+  auth)
+    # F-007: seed-admin CLI + POST /api/auth/token
+    COMPOSE="docker/docker-compose.dev.yml"
+    [[ -f "$COMPOSE" ]] || { echo "no $COMPOSE yet"; exit 0; }
+
+    FASTAPI_HOST_PORT="${FASTAPI_HOST_PORT:-18000}"
+
+    echo "--- auth V1: seed creates exactly one row ---"
+    docker compose -f "$COMPOSE" exec -T fastapi \
+      python -m dataplat_api.cli seed-admin \
+      --email admin@example.com --password testpassword123
+    docker compose -f "$COMPOSE" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "SELECT COUNT(*) FROM users WHERE email='admin@example.com'" \
+      | grep -q '^1$' \
+      || { echo "FAIL: auth V1 seed did not create exactly one row"; exit 1; }
+    echo "auth V1 seed: OK"
+
+    echo "--- auth V2: POST /api/auth/token correct credentials → 200 ---"
+    AUTH_TOKEN_BODY=$(mktemp)
+    RESP=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/auth/token" \
+      -d "username=admin@example.com&password=testpassword123" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -w '\n%{http_code}' -o "$AUTH_TOKEN_BODY")
+    STATUS_CODE=$(echo "$RESP" | tail -n1)
+    test "$STATUS_CODE" = "200" \
+      || { echo "FAIL: auth V2 token returned $STATUS_CODE: $(cat "$AUTH_TOKEN_BODY")"; rm -f "$AUTH_TOKEN_BODY"; exit 1; }
+    python3 -c "
+import json, sys
+body = json.load(open('$AUTH_TOKEN_BODY'))
+assert 'access_token' in body, f'missing access_token: {body}'
+assert body.get('token_type') == 'bearer', f'wrong token_type: {body}'
+print('  V2 OK: access_token present, token_type=bearer')
+" || { echo "FAIL: auth V2 response shape incorrect"; rm -f "$AUTH_TOKEN_BODY"; exit 1; }
+    rm -f "$AUTH_TOKEN_BODY"
+    echo "auth V2 correct credentials: OK"
+
+    echo "--- auth V3: POST /api/auth/token wrong password → 401 ---"
+    STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/auth/token" \
+      -d "username=admin@example.com&password=WRONG_PASSWORD_XYZ" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -o /dev/null -w '%{http_code}')
+    test "$STATUS" = "401" \
+      || { echo "FAIL: auth V3 wrong password returned $STATUS (expected 401)"; exit 1; }
+    echo "auth V3 wrong password: OK"
+    ;;
   all)
     # smoke first: cheapest check, fails fast if stack is not up at all.
     # apps/api confirmed present since F-001 passes:true.
@@ -321,6 +375,7 @@ print(body['dagster_run_id'], end='')
     bash "$0" frontend
     bash "$0" contract
     bash "$0" migration
+    bash "$0" auth
     bash "$0" buckets
     bash "$0" dagster
     bash "$0" runs

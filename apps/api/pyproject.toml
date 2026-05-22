@@ -24,10 +24,24 @@ dependencies = [
     # Added S004-F-004: async HTTP client for DagsterGateway
     # Not a transitive dep of FastAPI — must be explicit.
     "httpx==0.28.1",
+    # Added S007-F-007: password hashing + JWT issuance for auth endpoint
+    # passlib dropped (bcrypt.__about__ removed in bcrypt 4.0 → AttributeError at runtime)
+    # direct bcrypt call: bcrypt.hashpw / bcrypt.checkpw
+    "bcrypt>=4.0.0",
+    "PyJWT>=2.9.0",
+    # OAuth2PasswordRequestForm requires python-multipart for form body parsing
+    "python-multipart>=0.0.9",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["dataplat_api"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: marks tests that require a live compose stack (deselect with -m 'not integration')",
+]
+# Skip integration tests by default; run with RUN_INTEGRATION_TESTS=1 to include them.
+addopts = "-m 'not integration'"
 
 [dependency-groups]
 dev = [

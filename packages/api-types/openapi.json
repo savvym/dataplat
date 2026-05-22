@@ -1,0 +1,338 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Dataplat API",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "summary": "Healthz",
+        "description": "Health check endpoint. No auth required. No DB query.",
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Healthz Healthz Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/dagster-status": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Dagster Status",
+        "description": "Return the running Dagster version.\n\nCalls the Dagster GraphQL endpoint via DagsterGateway. Returns 503 if\nDagster is unreachable or returns an unexpected response.\n\nTODO(F-008): add JWT dependency here once auth middleware is wired.",
+        "operationId": "dagster_status_api_admin_dagster_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DagsterStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/runs/hello-world": {
+      "post": {
+        "tags": [
+          "admin",
+          "runs"
+        ],
+        "summary": "Trigger hello_world smoke job",
+        "description": "Launch the hello_world_job in Dagster and return the assigned run ID. Each POST creates a new Dagster run (no idempotency / dedup). This is an admin smoke endpoint \u2014 not the generic run trigger (see F-018). TODO(F-008): require admin role.",
+        "operationId": "launch_hello_world_api_admin_runs_hello_world_post",
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LaunchHelloWorldResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get Dagster run status",
+        "description": "Return the current status of a Dagster run. Queries Dagster directly \u2014 the local `run` Postgres table is not used (that requires auth context from F-008/F-018). Status values: 'running', 'success', 'failure'. TODO(F-008): require auth.",
+        "operationId": "get_run_status_api_runs__run_id__get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/token": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Obtain a JWT access token",
+        "description": "Validates email (submitted as `username`) and password via bcrypt. Returns a signed HS256 JWT on success. Returns HTTP 401 for incorrect credentials (same message whether the user is not found or the password is wrong \u2014 prevents email enumeration). TODO(F-008): downstream routes will require Bearer <token> once JWT middleware is wired.",
+        "operationId": "login_api_auth_token_post",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_login_api_auth_token_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Body_login_api_auth_token_post": {
+        "properties": {
+          "grant_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^password$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grant Type"
+          },
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope",
+            "default": ""
+          },
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
+          "client_secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Secret"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "Body_login_api_auth_token_post"
+      },
+      "DagsterStatusResponse": {
+        "properties": {
+          "dagster_version": {
+            "type": "string",
+            "title": "Dagster Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dagster_version"
+        ],
+        "title": "DagsterStatusResponse",
+        "description": "Response body for GET /api/admin/dagster-status.\n\nWhen packages/api-types/ codegen is wired (first web-facing sprint),\nthis model will automatically produce the corresponding TypeScript type\nvia `make codegen` \u2014 no changes needed here at that point."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "LaunchHelloWorldResponse": {
+        "properties": {
+          "dagster_run_id": {
+            "type": "string",
+            "title": "Dagster Run Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dagster_run_id"
+        ],
+        "title": "LaunchHelloWorldResponse",
+        "description": "Response body for POST /api/admin/runs/hello-world (HTTP 201 Created).\n\nFields:\n    dagster_run_id: The Dagster run UUID assigned by the webserver.\n        Matches design doc \u00a74.1 column name `dagster_run_id TEXT UNIQUE NOT NULL`."
+      },
+      "RunStatusResponse": {
+        "properties": {
+          "dagster_run_id": {
+            "type": "string",
+            "title": "Dagster Run Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "success",
+              "failure"
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dagster_run_id",
+          "status"
+        ],
+        "title": "RunStatusResponse",
+        "description": "Response body for GET /api/runs/{run_id} (HTTP 200 OK).\n\nFields:\n    dagster_run_id: The Dagster run UUID (echoed from the path parameter).\n    status: Three-value internal status derived from Dagster's RunStatus enum.\n        \"running\"  \u2014 run is queued or in progress\n        \"success\"  \u2014 run completed successfully\n        \"failure\"  \u2014 run failed or was canceled"
+      },
+      "TokenResponse": {
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "title": "Access Token"
+          },
+          "token_type": {
+            "type": "string",
+            "title": "Token Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "access_token",
+          "token_type"
+        ],
+        "title": "TokenResponse",
+        "description": "Response body for POST /api/auth/token (HTTP 200 OK).\n\nFields match the F-007 verification requirement verbatim:\n    {\"access_token\": \"...\", \"token_type\": \"bearer\"}\n\naccess_token: signed JWT string (HS256, claims: sub, email, iat, exp).\ntoken_type:   always \"bearer\" \u2014 FastAPI OAuth2 convention."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

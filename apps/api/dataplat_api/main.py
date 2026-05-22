@@ -14,6 +14,7 @@ from dataplat_api.config import settings
 from dataplat_api.dagster.gateway import DagsterGateway
 from dataplat_api.db.session import engine
 from dataplat_api.routers.admin import router as admin_router
+from dataplat_api.routers.auth import router as auth_router
 from dataplat_api.routers.health import router as health_router
 from dataplat_api.routers.runs import admin_runs_router, runs_router
 
@@ -43,3 +44,4 @@ app.include_router(health_router)
 app.include_router(admin_router)
 app.include_router(admin_runs_router)
 app.include_router(runs_router)
+app.include_router(auth_router)

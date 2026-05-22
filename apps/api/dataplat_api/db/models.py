@@ -34,6 +34,14 @@ class User(Base):
         server_default=text("now()"),
         nullable=True,
     )
+    # Added S007-F-007: bcrypt hash of the user's password.
+    # server_default='' matches the 0002 migration DDL DEFAULT ''; application
+    # code always supplies a real hash — the empty string is a sentinel only.
+    hashed_password: Mapped[str] = mapped_column(
+        sa.Text,
+        nullable=False,
+        server_default=text("''"),
+    )
 
 
 # ── 2. source_collection ──────────────────────────────────────────────────────
