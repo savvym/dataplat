@@ -18,14 +18,21 @@ so no real network call is ever attempted.
 """
 
 import os
-from unittest.mock import patch
+from collections.abc import AsyncGenerator, Iterator
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 # Provide mandatory settings so Settings() doesn't raise on import.
+# IMPORTANT: dataplat_api.* imports MUST come after these setdefaults because
+# dataplat_api.config.Settings() is constructed at module-level and requires
+# DATABASE_URL to be present in the environment at import time.
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/test")
 os.environ.setdefault("DAGSTER_GRAPHQL_URL", "http://localhost:3000/graphql")
+
+from sqlalchemy.ext.asyncio import AsyncEngine  # noqa: E402
 
 
 def _no_op_transport(request: httpx.Request) -> httpx.Response:
@@ -49,4 +56,34 @@ def _patch_httpx_no_ssl() -> pytest.FixtureRequest:
         original_init(self, *args, **kwargs)
 
     with patch.object(httpx.AsyncClient, "__init__", patched_init):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _patch_engine_begin() -> Iterator[None]:
+    """Patch engine.begin() to a no-op so tests don't require a live Postgres.
+
+    The lifespan in main.py runs `async with engine.begin() as conn:
+    await conn.execute(text("SELECT 1"))` to probe DB at startup.  In production
+    that probe proves DB reachability (used by verify/checks.sh smoke C2).
+    In unit tests we don't want to require a live Postgres just to construct
+    the FastAPI app via TestClient — so we mock the probe to a no-op.
+
+    Patch target: AsyncEngine.begin (class-level patch).
+    AsyncEngine.begin is a read-only instance attribute, so patch.object on the
+    engine instance raises AttributeError.  Patching at the class level works
+    correctly: when Python dispatches engine.begin(), it finds the patched
+    function on the class and calls it.  The fake_begin function accepts an
+    optional `self` parameter to absorb the implicit engine instance argument.
+
+    Production code is unaffected — this patch is only active under pytest.
+    """
+
+    @asynccontextmanager
+    async def fake_begin(self: object = None) -> AsyncGenerator[MagicMock, None]:  # type: ignore[return]
+        conn = MagicMock()
+        conn.execute = AsyncMock(return_value=None)
+        yield conn
+
+    with patch.object(AsyncEngine, "begin", fake_begin):
         yield

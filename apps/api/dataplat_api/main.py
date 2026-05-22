@@ -8,9 +8,11 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI
+from sqlalchemy import text
 
 from dataplat_api.config import settings
 from dataplat_api.dagster.gateway import DagsterGateway
+from dataplat_api.db.session import engine
 from dataplat_api.routers.admin import router as admin_router
 from dataplat_api.routers.health import router as health_router
 from dataplat_api.routers.runs import admin_runs_router, runs_router
@@ -24,6 +26,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     It is stored on app.state so the get_dagster_gateway() dependency can
     retrieve it without module-level state.
     """
+    # DB liveness probe — raises and aborts startup if Postgres is unreachable.
+    # This makes /healthz reachability genuinely imply DB connectivity, which
+    # is what verify/checks.sh smoke C2 relies on.
+    async with engine.begin() as conn:
+        await conn.execute(text("SELECT 1"))
     gateway = DagsterGateway(graphql_url=settings.DAGSTER_GRAPHQL_URL)
     app.state.dagster_gateway = gateway
     yield
