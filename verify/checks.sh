@@ -269,6 +269,141 @@ assert 'dagster_version' in body, f'missing dagster_version key: {body}'
 assert len(body['dagster_version']) > 0, f'dagster_version is empty: {body}'
 print('  V2 OK (post-restart): dagster_version =', body['dagster_version'])
 " || { echo "FAIL: V2 check failed after restart"; exit 1; }
+
+    # F-012: Reload dagster-webserver with updated definitions.py (bind-mounted dagster/).
+    # The bind mount (added this sprint) means no image rebuild is needed —
+    # docker compose up -d has already mounted the live dagster/ tree.
+    # A restart is required because the Dagster webserver does NOT hot-reload Python.
+    echo "--- dagster F012-prerestart: reload dagster-webserver with updated definitions ---"
+    docker compose -f "$COMPOSE" restart dagster-webserver
+
+    # Wait for dagster-webserver healthy (max 60s — longer than fastapi because Dagster
+    # re-imports code location on restart which takes a few extra seconds).
+    DAGSTER_READY=0
+    for i in $(seq 1 60); do
+      STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+        "http://localhost:${DAGSTER_HOST_PORT:-13000}/dagster_version" 2>/dev/null || echo "000")
+      [[ "$STATUS" == "200" ]] && { DAGSTER_READY=1; break; }
+      sleep 1
+    done
+    [[ "$DAGSTER_READY" == "1" ]] || { echo "FAIL: dagster-webserver did not become healthy after restart"; exit 1; }
+    echo "  dagster-webserver restarted and healthy"
+
+    echo "--- dagster F012-V1: dynamic partition key appears in Dagster after upload ---"
+    # Mint a fresh token for the F012 upload.
+    F012_TOKEN_BODY=$(mktemp)
+    F012_TOKEN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/auth/token" \
+      -d "username=admin@example.com&password=testpassword123" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -w '%{http_code}' -o "$F012_TOKEN_BODY")
+    test "$F012_TOKEN_STATUS" = "200" \
+      || { echo "FAIL: dagster F012-V1 could not mint token (status $F012_TOKEN_STATUS)"; rm -f "$F012_TOKEN_BODY"; exit 1; }
+    F012_TOKEN=$(python3 -c "import json; print(json.load(open('$F012_TOKEN_BODY'))['access_token'])")
+    rm -f "$F012_TOKEN_BODY"
+
+    # Generate a minimal valid PDF fixture.
+    F012_PDF=$(mktemp /tmp/f012-XXXXXX.pdf)
+    python3 -c "
+pdf = (b'%PDF-1.4\n1 0 obj<</Type /Catalog /Pages 2 0 R>>endobj\n'
+       b'2 0 obj<</Type /Pages /Kids[3 0 R] /Count 1>>endobj\n'
+       b'3 0 obj<</Type /Page /MediaBox[0 0 612 792] /Parent 2 0 R>>endobj\n'
+       b'xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n'
+       b'0000000058 00000 n \n0000000115 00000 n \n'
+       b'trailer<</Size 4 /Root 1 0 R>>\nstartxref\n182\n%%EOF\n')
+open('$F012_PDF', 'wb').write(pdf)
+"
+
+    # Upload the PDF to capture the source id and expected partition key.
+    F012_UPLOAD_BODY=$(mktemp)
+    F012_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/upload" \
+      -H "Authorization: Bearer $F012_TOKEN" \
+      -F "file=@${F012_PDF};type=application/pdf" \
+      -w '%{http_code}' -o "$F012_UPLOAD_BODY")
+    rm -f "$F012_PDF"
+    test "$F012_STATUS" = "201" \
+      || { echo "FAIL: dagster F012-V1 upload returned $F012_STATUS: $(cat "$F012_UPLOAD_BODY")"; rm -f "$F012_UPLOAD_BODY"; exit 1; }
+    F012_SRC_ID=$(python3 -c "import json; print(json.load(open('$F012_UPLOAD_BODY'))['id'])")
+    rm -f "$F012_UPLOAD_BODY"
+    F012_PARTITION_KEY="src_${F012_SRC_ID}"
+    echo "  uploaded source id=$F012_SRC_ID, expected partition key=$F012_PARTITION_KEY"
+
+    # Query Dagster GraphQL for the source asset's partition keys from inside the container.
+    PARTITION_CHECK=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+      python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query {
+        assetNodes(assetKeys: [{path: [\"source\"]}]) {
+            assetKey { path }
+            isPartitioned
+            partitionKeys
+        }
+    }'''
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req)
+data = json.load(resp)
+nodes = data['data']['assetNodes']
+if not nodes:
+    print('FAIL: no assetNodes returned for source', file=sys.stderr)
+    sys.exit(1)
+node = nodes[0]
+keys = node.get('partitionKeys', [])
+target = '$F012_PARTITION_KEY'
+if target in keys:
+    print(f'  F012-V1 OK: partition key {target} found in {len(keys)} keys')
+else:
+    print(f'FAIL: partition key {target} not found. Keys: {keys}', file=sys.stderr)
+    sys.exit(1)
+" 2>&1)
+    echo "$PARTITION_CHECK" | grep -q "FAIL" \
+      && { echo "$PARTITION_CHECK"; exit 1; } || echo "$PARTITION_CHECK"
+
+    echo "--- dagster F012-V2: materialization event recorded in Dagster ---"
+    # Confirmed query shape (Dagster 1.11.16):
+    #   assetMaterializations arg is 'partitions' (plural, list), NOT 'partitionInLast'.
+    #   MaterializationEvent has a 'partition' (singular) field.
+    # Verified end-to-end against live Dagster 1.11.16 (S012-F-012 agreed.md §7-F012-V2).
+    MAT_CHECK=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+      python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query {
+        assetOrError(assetKey: {path: [\"source\"]}) {
+            __typename
+            ... on Asset {
+                assetMaterializations(partitions: [\"$F012_PARTITION_KEY\"], limit: 10) {
+                    partition
+                    runId
+                }
+            }
+            ... on AssetNotFoundError { message }
+        }
+    }'''
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req)
+data = json.load(resp)
+result = data['data']['assetOrError']
+typename = result.get('__typename')
+if typename != 'Asset':
+    print(f'FAIL: assetOrError returned {typename}', file=sys.stderr)
+    sys.exit(1)
+mats = result.get('assetMaterializations', [])
+target = '$F012_PARTITION_KEY'
+found = any(m.get('partition') == target for m in mats)
+if found:
+    print(f'  F012-V2 OK: materialization event for partition {target} found')
+else:
+    print(f'FAIL: no materialization for {target}. Got: {mats}', file=sys.stderr)
+    sys.exit(1)
+" 2>&1)
+    echo "$MAT_CHECK" | grep -q "FAIL" \
+      && { echo "$MAT_CHECK"; exit 1; } || echo "$MAT_CHECK"
     ;;
   runs)
     # F-005: hello-world Dagster job launch + status poll

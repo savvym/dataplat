@@ -13,7 +13,8 @@ Methods:
     get_dagster_version() -> str                    # F-004
     launch_hello_world() -> str                     # F-005
     get_run_status(run_id: str) -> dict             # F-005
-    add_dynamic_partition(...)  -> None             # F-018 (future)
+    add_source_partition(partition_key) -> None     # F-012
+    report_source_materialization(...) -> None      # F-012
     reload_code_location(...) -> None               # future
 """
 
@@ -79,6 +80,64 @@ query GetRunStatus($runId: ID!) {
       status
     }
     ... on RunNotFoundError {
+      message
+    }
+    ... on PythonError {
+      message
+    }
+  }
+}
+"""
+
+# F-012: Add a single dynamic partition key to the "sources" partition definition.
+# Confirmed mutation name: addDynamicPartition (singular) — NOT addDynamicPartitions.
+# Confirmed via introspection against live Dagster 1.11.16 (S012-F-012 agreed.md §3-U2).
+# repositorySelector is REQUIRED for addDynamicPartition.
+_ADD_SOURCE_PARTITION_MUTATION = """
+mutation AddSourcePartition(
+  $partitionKey: String!
+  $partitionsDefName: String!
+  $repositorySelector: RepositorySelector!
+) {
+  addDynamicPartition(
+    partitionKey: $partitionKey
+    partitionsDefName: $partitionsDefName
+    repositorySelector: $repositorySelector
+  ) {
+    __typename
+    ... on AddDynamicPartitionSuccess {
+      partitionKey
+      partitionsDefName
+    }
+    ... on DuplicateDynamicPartitionError {
+      partitionsDefName
+      partitionName
+      message
+    }
+    ... on UnauthorizedError {
+      message
+    }
+    ... on PythonError {
+      message
+    }
+  }
+}
+"""
+
+# F-012: Report a runless asset materialization for the external "source" asset.
+# Confirmed mutation name: reportRunlessAssetEvents — NOT reportRuntimeAssetMaterialization.
+# ReportRunlessAssetEventsParams has NO metadata field; use description for traceability.
+# Confirmed via introspection against live Dagster 1.11.16 (S012-F-012 agreed.md §3-U2).
+_REPORT_SOURCE_MATERIALIZATION_MUTATION = """
+mutation ReportSourceMaterialization($params: ReportRunlessAssetEventsParams!) {
+  reportRunlessAssetEvents(eventParams: $params) {
+    __typename
+    ... on ReportRunlessAssetEventsSuccess {
+      assetKey {
+        path
+      }
+    }
+    ... on UnauthorizedError {
       message
     }
     ... on PythonError {
@@ -405,6 +464,184 @@ class DagsterGateway:
             mapped_status = "running"
 
         return {"dagster_run_id": run_id, "status": mapped_status}
+
+    async def add_source_partition(self, partition_key: str) -> None:
+        """Add a dynamic partition key to the "sources" partition definition.
+
+        Called after a successful source upload to register the partition in
+        Dagster so downstream asset jobs can target it.
+
+        Partition key format: "src_{source_id}" (F-012 agreed.md §3-D-gateway).
+
+        Idempotent: if the partition already exists, Dagster returns
+        DuplicateDynamicPartitionError — this is treated as a no-op (logged
+        at DEBUG, not raised), because the partition is already registered.
+
+        Raises DagsterGatewayError for all failure cases:
+        - httpx network errors (ConnectError, TimeoutException, HTTPError)
+        - HTTP non-2xx response
+        - Non-JSON response body
+        - Top-level GraphQL "errors" key present
+        - UnauthorizedError typename — in OSS Dagster without auth this means
+          the "sources" DynamicPartitionsDefinition is not loaded in the code
+          location (dagster-webserver not restarted after definitions.py change)
+        - PythonError typename
+        - Any unexpected __typename
+        """
+        payload = {
+            "query": _ADD_SOURCE_PARTITION_MUTATION,
+            "variables": {
+                "partitionKey": partition_key,
+                "partitionsDefName": "sources",
+                "repositorySelector": {
+                    "repositoryLocationName": _REPOSITORY_LOCATION_NAME,
+                    "repositoryName": _REPOSITORY_NAME,
+                },
+            },
+        }
+        try:
+            response = await self._client.post(self._url, json=payload)
+        except httpx.TimeoutException as exc:
+            raise DagsterGatewayError("Dagster request timed out") from exc
+        except httpx.ConnectError as exc:
+            raise DagsterGatewayError("Cannot connect to Dagster") from exc
+        except httpx.HTTPError as exc:
+            raise DagsterGatewayError(f"HTTP error contacting Dagster: {exc}") from exc
+
+        if not response.is_success:
+            raise DagsterGatewayError(
+                f"Dagster returned HTTP {response.status_code}"
+            )
+
+        try:
+            body = response.json()
+        except Exception as exc:
+            raise DagsterGatewayError("Dagster response is not valid JSON") from exc
+
+        errors = body.get("errors")
+        if errors:
+            msg = errors[0].get("message", "unknown GraphQL error") if isinstance(errors, list) else str(errors)
+            raise DagsterGatewayError(f"Dagster GraphQL error: {msg}")
+
+        try:
+            result = body["data"]["addDynamicPartition"]
+        except (KeyError, TypeError) as exc:
+            raise DagsterGatewayError(
+                "Unexpected Dagster addDynamicPartition response shape"
+            ) from exc
+
+        typename = result.get("__typename")
+
+        if typename == "AddDynamicPartitionSuccess":
+            return None
+
+        if typename == "DuplicateDynamicPartitionError":
+            # Partition already exists — idempotent no-op.
+            logger.debug(
+                "add_source_partition: partition %r already exists in 'sources' — no-op",
+                partition_key,
+            )
+            return None
+
+        if typename == "UnauthorizedError":
+            # In OSS Dagster this indicates the partition def is missing from the
+            # loaded code location (not an auth error). Treat as gateway failure.
+            msg = result.get("message", "UnauthorizedError from addDynamicPartition")
+            raise DagsterGatewayError(
+                f"Dagster addDynamicPartition UnauthorizedError: {msg}"
+            )
+
+        if typename == "PythonError":
+            msg = result.get("message", "unknown PythonError")
+            raise DagsterGatewayError(f"Dagster addDynamicPartition PythonError: {msg}")
+
+        raise DagsterGatewayError(
+            f"Unexpected addDynamicPartition typename: {typename}"
+        )
+
+    async def report_source_materialization(
+        self,
+        partition_key: str,
+        storage_uri: str,
+        size_bytes: int,
+    ) -> None:
+        """Report a runless asset materialization event for the external 'source' asset.
+
+        Records that the partition was materialised (i.e., the PDF was uploaded)
+        so Dagster's asset lineage graph has a node for this source. This uses
+        reportRunlessAssetEvents — the correct Dagster 1.11.16 mutation
+        (NOT reportRuntimeAssetMaterialization, which does not exist).
+
+        The description field carries "uri=<storage_uri> size=<size_bytes>" for
+        traceability in the Dagster event log (no metadata field available in
+        ReportRunlessAssetEventsParams in Dagster 1.11.16 — confirmed via
+        introspection, S012-F-012 agreed.md §3-U2).
+
+        Raises DagsterGatewayError for all failure cases (same pattern as
+        add_source_partition above).
+        """
+        payload = {
+            "query": _REPORT_SOURCE_MATERIALIZATION_MUTATION,
+            "variables": {
+                "params": {
+                    "eventType": "ASSET_MATERIALIZATION",
+                    "assetKey": {"path": ["source"]},
+                    "partitionKeys": [partition_key],
+                    "description": f"uri={storage_uri} size={size_bytes}",
+                }
+            },
+        }
+        try:
+            response = await self._client.post(self._url, json=payload)
+        except httpx.TimeoutException as exc:
+            raise DagsterGatewayError("Dagster request timed out") from exc
+        except httpx.ConnectError as exc:
+            raise DagsterGatewayError("Cannot connect to Dagster") from exc
+        except httpx.HTTPError as exc:
+            raise DagsterGatewayError(f"HTTP error contacting Dagster: {exc}") from exc
+
+        if not response.is_success:
+            raise DagsterGatewayError(
+                f"Dagster returned HTTP {response.status_code}"
+            )
+
+        try:
+            body = response.json()
+        except Exception as exc:
+            raise DagsterGatewayError("Dagster response is not valid JSON") from exc
+
+        errors = body.get("errors")
+        if errors:
+            msg = errors[0].get("message", "unknown GraphQL error") if isinstance(errors, list) else str(errors)
+            raise DagsterGatewayError(f"Dagster GraphQL error: {msg}")
+
+        try:
+            result = body["data"]["reportRunlessAssetEvents"]
+        except (KeyError, TypeError) as exc:
+            raise DagsterGatewayError(
+                "Unexpected Dagster reportRunlessAssetEvents response shape"
+            ) from exc
+
+        typename = result.get("__typename")
+
+        if typename == "ReportRunlessAssetEventsSuccess":
+            return None
+
+        if typename == "UnauthorizedError":
+            msg = result.get("message", "UnauthorizedError from reportRunlessAssetEvents")
+            raise DagsterGatewayError(
+                f"Dagster reportRunlessAssetEvents UnauthorizedError: {msg}"
+            )
+
+        if typename == "PythonError":
+            msg = result.get("message", "unknown PythonError")
+            raise DagsterGatewayError(
+                f"Dagster reportRunlessAssetEvents PythonError: {msg}"
+            )
+
+        raise DagsterGatewayError(
+            f"Unexpected reportRunlessAssetEvents typename: {typename}"
+        )
 
     async def aclose(self) -> None:
         """Close the underlying httpx.AsyncClient. Called in lifespan teardown."""

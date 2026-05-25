@@ -1,10 +1,22 @@
 # dagster_platform/definitions.py
 # Dagster code location for the dataplat platform.
 # F-005: hello_world_job — smoke job to verify orchestration end-to-end.
-# Assets, schedules, and sensors for the full asset graph are added in later
-# sprints (F-010+).
+# F-012: sources_partitions + source_asset — external asset for uploaded sources,
+#        partitioned by DynamicPartitionsDefinition("sources"). FastAPI notifies
+#        Dagster after each upload via addDynamicPartition + reportRunlessAssetEvents.
 
-from dagster import Definitions, job, op
+from dagster import AssetSpec, Definitions, DynamicPartitionsDefinition, job, op
+
+# F-012: Dynamic partition definition for source uploads.
+# Partition key format: "src_{source_id}" (set by FastAPI after DB flush).
+# Confirmed working in Dagster 1.11.16 (S012-F-012 agreed.md §3-D-asset).
+sources_partitions = DynamicPartitionsDefinition(name="sources")
+
+# F-012: External asset — Dagster does not materialise it; FastAPI reports
+# materialization events via reportRunlessAssetEvents after each upload.
+# AssetSpec is the correct API in Dagster 1.11.16 (external_asset_from_spec
+# does NOT exist in this version — confirmed via introspection).
+source_asset = AssetSpec(key="source", partitions_def=sources_partitions)
 
 
 @op
@@ -27,4 +39,5 @@ def hello_world_job() -> None:
 
 defs = Definitions(
     jobs=[hello_world_job],
+    assets=[source_asset],
 )

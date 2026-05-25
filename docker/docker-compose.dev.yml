@@ -112,6 +112,10 @@ services:
   # ── 4. Dagster webserver ──────────────────────────────────────────────────
   # Port :3000 = Dagster webserver (GraphQL API + /dagster_version).
   # NOT the frontend — frontend is on :5173.
+  # F-012: bind mount ../dagster:/app/dagster shadows the COPY in the Dockerfile
+  # so definitions.py changes take effect on `docker compose restart dagster-webserver`
+  # without an image rebuild (local dev — agreed.md §3-U1, §3-D-bindmount-scope).
+  # CI/production uses the Dockerfile COPY as usual (no bind mount in those envs).
   dagster-webserver:
     build:
       context: ..
@@ -124,6 +128,8 @@ services:
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
       POSTGRES_DB_DAGSTER: ${POSTGRES_DB_DAGSTER:-platform_dagster}
     command: dagster-webserver -h 0.0.0.0 -p 3000 -w /app/dagster/workspace.yaml
+    volumes:
+      - ../dagster:/app/dagster
     ports:
       - "${DAGSTER_HOST_PORT:-13000}:3000"
     depends_on:
@@ -138,6 +144,7 @@ services:
     restart: unless-stopped
 
   # ── 5. Dagster daemon ─────────────────────────────────────────────────────
+  # F-012: bind mount for code-location consistency (agreed.md §3-D-bindmount-scope).
   dagster-daemon:
     build:
       context: ..
@@ -150,6 +157,8 @@ services:
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
       POSTGRES_DB_DAGSTER: ${POSTGRES_DB_DAGSTER:-platform_dagster}
     command: dagster-daemon run -w /app/dagster/workspace.yaml
+    volumes:
+      - ../dagster:/app/dagster
     depends_on:
       postgres:
         condition: service_healthy
@@ -160,7 +169,7 @@ services:
   # ── 6. Dagster worker — CPU ───────────────────────────────────────────────
   # Uses `sleep infinity` this sprint (no real gRPC code location yet).
   # Port 4000 is RESERVED for F-005 (dagster api grpc -p 4000).
-  # See agreed.md §8 OQ-2 for the migration checklist.
+  # F-012: bind mount for code-location consistency (agreed.md §3-D-bindmount-scope).
   dagster-worker-cpu:
     build:
       context: ..
@@ -174,6 +183,8 @@ services:
       POSTGRES_DB_DAGSTER: ${POSTGRES_DB_DAGSTER:-platform_dagster}
       WORKER_PROFILE: cpu
     command: sleep infinity
+    volumes:
+      - ../dagster:/app/dagster
     depends_on:
       postgres:
         condition: service_healthy
@@ -184,6 +195,7 @@ services:
   # ── 7. Dagster worker — Heavy ─────────────────────────────────────────────
   # Uses `sleep infinity` this sprint (no real gRPC code location yet).
   # Port 4001 is RESERVED for F-005 (dagster api grpc -p 4001).
+  # F-012: bind mount for code-location consistency (agreed.md §3-D-bindmount-scope).
   dagster-worker-heavy:
     build:
       context: ..
@@ -197,6 +209,8 @@ services:
       POSTGRES_DB_DAGSTER: ${POSTGRES_DB_DAGSTER:-platform_dagster}
       WORKER_PROFILE: heavy
     command: sleep infinity
+    volumes:
+      - ../dagster:/app/dagster
     depends_on:
       postgres:
         condition: service_healthy

@@ -1,5 +1,5 @@
 """Sources router — S008-F-008 stub + S009-F-009 POST + S010-F-010 GET list
-+ S011-F-011 POST /upload.
++ S011-F-011 POST /upload + S012-F-012 Dagster notify.
 
 Provides:
   GET  /api/sources/collections — paginated list of caller's collections (F-010).
@@ -13,6 +13,7 @@ MUST NOT be removed from any handler.
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from typing import Any
 
@@ -23,6 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataplat_api.auth.dependencies import get_current_user
 from dataplat_api.config import settings
+from dataplat_api.dagster.dependencies import get_dagster_gateway
+from dataplat_api.dagster.gateway import DagsterGateway, DagsterGatewayError
 from dataplat_api.db.models import Source, SourceCollection, User
 from dataplat_api.db.session import get_session
 from dataplat_api.schemas.collections import (
@@ -32,6 +35,8 @@ from dataplat_api.schemas.collections import (
 )
 from dataplat_api.schemas.sources import SourceUploadResponse
 from dataplat_api.storage.s3 import get_s3_client
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
@@ -131,12 +136,19 @@ async def upload_source(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     s3: Any = Depends(get_s3_client),
+    gateway: DagsterGateway = Depends(get_dagster_gateway),
 ) -> SourceUploadResponse:
     """Upload a PDF file as a new source.
 
     Stores the file in MinIO at s3://sources/{source_id}/original.pdf and
     writes a source row to Postgres with sha256, storage_uri, kind='file',
     mime_type='application/pdf'.  Returns the new source id and storage_uri.
+
+    After commit, notifies Dagster on a best-effort basis (F-012):
+      1. addDynamicPartition: registers src_{id} in the "sources" partition def.
+      2. reportRunlessAssetEvents: records a materialization event for 'source'.
+    If either Dagster call fails, the upload still returns 201 — the source is
+    durable in DB+MinIO regardless. A Dagster outage does not roll back the upload.
 
     Atomicity (agreed.md §3-D3):
       flush (get id) → set uri/partition_key → S3 upload → commit.
@@ -205,6 +217,37 @@ async def upload_source(
     # Step 11: commit — row is now durable with correct storage_uri and
     # dagster_partition_key.
     await session.commit()
+
+    # F-012: Best-effort Dagster notification — AFTER commit so the source is
+    # durable regardless of Dagster availability.  DagsterGatewayError is caught
+    # and logged at WARNING; the handler still returns 201 because the upload
+    # genuinely succeeded.  The two calls are separate try/except blocks so
+    # report_source_materialization is always attempted even if add_source_partition
+    # fails (agreed.md §3-D-ordering, §4).
+    partition_key = source.dagster_partition_key  # e.g. "src_42"
+    try:
+        await gateway.add_source_partition(partition_key)
+    except DagsterGatewayError as exc:
+        logger.warning(
+            "F-012: add_source_partition failed for %s — Dagster may be down or "
+            "partition def not loaded; partition not registered. "
+            "Upload still succeeds. Error: %s",
+            partition_key,
+            exc,
+        )
+    try:
+        await gateway.report_source_materialization(
+            partition_key=partition_key,
+            storage_uri=source.storage_uri,
+            size_bytes=source.size or 0,
+        )
+    except DagsterGatewayError as exc:
+        logger.warning(
+            "F-012: report_source_materialization failed for %s — "
+            "materialization event not recorded. Upload still succeeds. Error: %s",
+            partition_key,
+            exc,
+        )
 
     # Step 12: return minimal response per agreed.md §3-D8.
     return SourceUploadResponse(id=source.id, storage_uri=source.storage_uri)
