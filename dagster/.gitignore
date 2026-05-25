@@ -1,0 +1,7 @@
+# Dagster runtime state — written into this dir by the dagster-webserver/daemon
+# containers via the docker-compose bind mount (../dagster:/app/dagster).
+# These are local instance artefacts, never source.
+storage/
+.telemetry/
+logs/
+.logs_queue/
