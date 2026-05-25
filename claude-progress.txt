@@ -281,3 +281,12 @@ Starting sprint S010-F-010: implement real GET /api/sources/collections body (pa
 [2026-05-25T08:12:48Z] delegating to reviewer (Mode A); reason: review proposed.md for F-013
 [2026-05-25T08:14:54Z] delegating to implementer; reason: build F-013 per agreed.md, commit
 [2026-05-25T08:30:00Z] F-013 implementation complete. Added SourceRead schema (10 fields, from_attributes=True), GET /api/sources/{id} handler with LEFT JOIN owner-scoping and 404 on missing/inaccessible source, 9 unit tests (all pass), F013-V1 + F013-V2 assertions in checks.sh sources) layer, and regenerated packages/api-types/openapi.json (137 insertions: new route + SourceRead component). backend/contract/sources checks all green. No deviations from agreed.md.
+[2026-05-25T08:20:24Z] delegating to reviewer (Mode B); reason: review F-013 diff (commit 1ebe857) against agreed.md
+[2026-05-25T08:22:52Z] delegating to verifier; reason: run checks for F-013 (sources, backend layers)
+S013-F-013: verifier PASS — all layers green (smoke, backend, sources). F013-V1 + F013-V2 verified: GET /api/sources/{id} returns 200 with all required fields (storage_uri, sha256, size, mime_type, collection_id); GET /api/sources/99999 returns 404. Exit codes: smoke=0, backend=0 (86 tests passed), sources=0.
+
+[2026-05-25] CLOSED sprint S013-F-013 — F-013 PASS.
+  Shipped: GET /api/sources/{id} returns full source record (SourceRead, 10 fields incl storage_uri/sha256/size/mime_type/collection_id).
+  Owner-scoped via LEFT JOIN source_collection (owner match OR uncollected); 404 for missing/inaccessible (no enumeration). Route appended last — /collections not shadowed.
+  Verifier: smoke=0, backend=0 (ruff+mypy clean, 86 pass incl 9 new), sources=0 (F013-V1 200+all fields id=5, F013-V2 99999→404). Impl commit 1ebe857. openapi.json regenerated in-commit (invariant #6).
+  feature_list.json F-013 → passes:true (13/105). README progress synced.

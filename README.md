@@ -122,7 +122,7 @@ done
 
 ## 当前进度（Phase 0–1）
 
-12/105 features 通过：
+13/105 features 通过：
 
 - **F-001** docker-compose 开发栈
 - **F-002** Postgres 基线迁移（8 张 §4.1 业务表）
@@ -137,7 +137,9 @@ done
 - **F-011** `POST /api/sources/upload` 上传 PDF：存入 MinIO `s3://sources/{id}/original.pdf`，写 source 行（`sha256` / `storage_uri` / `kind='file'` / `mime_type='application/pdf'`），返回 `{id, storage_uri}`；首个 app 内 S3 客户端 `storage/s3.py`（`get_s3_client` aioboto3 依赖，可在测试中 override）；flush-then-set 顺序（flush 取 id → 设 `storage_uri`/`dagster_partition_key=src_{id}`，临时键用 `uuid4().hex` → S3 上传 → commit；上传失败则事务隐式回滚不留孤儿行）；非 PDF → 415；checks.sh 新增 `sources)` 层 UPLOAD-V1..V4，`all)` 链插入到 `collections` 与 `buckets` 之间
 - **F-012** 上传成功后 FastAPI 通知 Dagster（best-effort，commit 之后）：`add_source_partition` 向 `"sources"` `DynamicPartitionsDefinition` 注册 `src_{source_id}`，`report_source_materialization` 为外部资产 `source` 上报一次 `reportRunlessAssetEvents` 物化事件；两次调用各自 try/except，失败仅记 WARNING 仍返回 201（上传已落库不受 Dagster 可用性影响）。新增 `dagster/dagster_platform/definitions.py` 的 `DynamicPartitionsDefinition("sources")` + `AssetSpec(key="source")`；gateway 新增两个 mutation 方法（沿用 launch_hello_world 错误处理，复用 repositorySelector 常量；`DuplicateDynamicPartitionError` 幂等忽略）；`docker-compose.dev.yml` 为全部 4 个 dagster 服务加 `../dagster:/app/dagster` bind mount（改代码后 restart 即生效，无需 rebuild），并新增 `dagster/.gitignore` 屏蔽运行时目录；checks.sh `dagster)` 层新增 F012-V1（partition 出现）+ F012-V2（物化事件）。注：Dagster 1.11.16 实际 mutation 为 `addDynamicPartition`（单数，需 repositorySelector）+ `reportRunlessAssetEvents`（非设计稿的 reportRuntimeAssetMaterialization）。
 
-下一批候选：F-013（source 详情 GET /api/sources/{id}）/ F-014（列出 collection 内 sources）/ F-015（MinerU operator 注册种子）。
+- **F-013** `GET /api/sources/{id}` 返回 source 完整记录（`SourceRead` 模型，10 字段含 `storage_uri`/`sha256`/`size`/`mime_type`/`collection_id`，`from_attributes=True`）；async `SELECT ... LEFT JOIN source_collection ... WHERE id=:id AND (collection.owner_id=:uid OR collection_id IS NULL)` + `scalar_one_or_none()`，缺失或越权一律 404（不泄露存在性，沿用 F-010 owner-scoping）；新路由追加在固定路径之后，不遮蔽 `/collections`；source 表无 `owner_id`，未归集 source 对所有已认证用户可见（严格归属需迁移，推迟）；checks.sh `sources)` 层新增 F013-V1（200 + 全字段）/ F013-V2（99999 → 404）。
+
+下一批候选：F-014（列出 collection 内 sources）/ F-015（MinerU operator 注册种子）/ F-016（列出 operators）。
 
 ---
 
