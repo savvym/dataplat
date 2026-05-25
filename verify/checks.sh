@@ -480,6 +480,103 @@ print(body['dagster_run_id'], end='')
       || true)
     test -z "$RAW_HTTPX" || { echo "FAIL: raw httpx import outside gateway: $RAW_HTTPX"; exit 1; }
     echo "  V2 OK: gateway boundary intact"
+
+    # F-018: POST /api/runs — trigger MinerU extraction backfill.
+    # $RUNS_TOKEN and $FASTAPI_HOST_PORT already set by the F-005 block above.
+    COMPOSE_F018="docker/docker-compose.dev.yml"
+
+    echo "--- runs F018 setup: upload a source for backfill test ---"
+    F018_PDF=$(mktemp /tmp/f018-XXXXXX.pdf)
+    python3 -c "
+pdf = (b'%PDF-1.4\n1 0 obj<</Type /Catalog /Pages 2 0 R>>endobj\n'
+       b'2 0 obj<</Type /Pages /Kids[3 0 R] /Count 1>>endobj\n'
+       b'3 0 obj<</Type /Page /MediaBox[0 0 612 792] /Parent 2 0 R>>endobj\n'
+       b'xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n'
+       b'0000000058 00000 n \n0000000115 00000 n \n'
+       b'trailer<</Size 4 /Root 1 0 R>>\nstartxref\n182\n%%EOF\nf018')
+open('$F018_PDF', 'wb').write(pdf)
+"
+    F018_UP_BODY=$(mktemp)
+    F018_UP_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/upload" \
+      -H "Authorization: Bearer $RUNS_TOKEN" \
+      -F "file=@${F018_PDF};type=application/pdf" \
+      -w '%{http_code}' -o "$F018_UP_BODY")
+    rm -f "$F018_PDF"
+    test "$F018_UP_STATUS" = "201" \
+      || { echo "FAIL: runs F018 setup upload returned $F018_UP_STATUS: $(cat "$F018_UP_BODY")"; rm -f "$F018_UP_BODY"; exit 1; }
+    F018_SRC_ID=$(python3 -c "import json; print(json.load(open('$F018_UP_BODY'))['id'])")
+    rm -f "$F018_UP_BODY"
+    echo "  uploaded source id=$F018_SRC_ID"
+
+    echo "--- runs F018-V1: POST /api/runs returns 202 with dagster_run_id + run_id ---"
+    V1_BODY=$(mktemp)
+    V1_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $RUNS_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"extract_mineru\", \"source_ids\": [${F018_SRC_ID}]}" \
+      -w '%{http_code}' -o "$V1_BODY")
+    test "$V1_STATUS" = "202" \
+      || { echo "FAIL: F018-V1 returned $V1_STATUS: $(cat "$V1_BODY")"; rm -f "$V1_BODY"; exit 1; }
+    python3 -c "
+import json, sys
+body = json.load(open('$V1_BODY'))
+assert 'dagster_run_id' in body, f'missing dagster_run_id: {body}'
+assert 'run_id' in body, f'missing run_id: {body}'
+assert isinstance(body['dagster_run_id'], str) and len(body['dagster_run_id']) > 0, \
+  f'dagster_run_id empty or not str: {body}'
+assert isinstance(body['run_id'], int), f'run_id not int: {body}'
+print('  F018-V1 OK: dagster_run_id=%s run_id=%d' % (body['dagster_run_id'], body['run_id']))
+" || { echo "FAIL: F018-V1 response shape incorrect"; rm -f "$V1_BODY"; exit 1; }
+    F018_BACKFILL_ID=$(python3 -c "import json; print(json.load(open('$V1_BODY'))['dagster_run_id'])")
+    F018_RUN_ID=$(python3 -c "import json; print(json.load(open('$V1_BODY'))['run_id'])")
+    rm -f "$V1_BODY"
+
+    echo "--- runs F018-V2: run row exists with kind=extract, status=pending ---"
+    docker compose -f "$COMPOSE_F018" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "SELECT kind || '|' || status FROM run WHERE id=${F018_RUN_ID}" \
+      | grep -q '^extract|pending$' \
+      || { echo "FAIL: F018-V2 — run row missing or wrong kind/status (expected extract|pending)"; exit 1; }
+    echo "  F018-V2 OK: run row kind=extract status=pending"
+
+    echo "--- runs F018-V3: Dagster shows backfill for extract_mineru ---"
+    BACKFILL_CHECK=$(docker compose -f "$COMPOSE_F018" exec -T dagster-webserver \
+      python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill {
+                id
+                isAssetBackfill
+                status
+                assetSelection { path }
+            }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$F018_BACKFILL_ID'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+typename = result.get('__typename')
+if typename != 'PartitionBackfill':
+    print(f'FAIL: partitionBackfillOrError returned {typename}: {result}', file=sys.stderr)
+    sys.exit(1)
+assert result.get('isAssetBackfill'), f'isAssetBackfill not true: {result}'
+paths = [seg for sel in result.get('assetSelection', []) for seg in sel.get('path', [])]
+assert 'extract_mineru' in paths, f'extract_mineru not in assetSelection paths: {paths}'
+print(f'  F018-V3 OK: backfillId={result[\"id\"]} status={result[\"status\"]} assets={paths}')
+" 2>&1)
+    echo "$BACKFILL_CHECK" | grep -q "FAIL" \
+      && { echo "$BACKFILL_CHECK"; exit 1; } || echo "$BACKFILL_CHECK"
     ;;
   auth)
     # F-007: seed-admin CLI + POST /api/auth/token

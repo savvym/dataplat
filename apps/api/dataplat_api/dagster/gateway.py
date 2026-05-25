@@ -147,6 +147,37 @@ mutation ReportSourceMaterialization($params: ReportRunlessAssetEventsParams!) {
 }
 """
 
+# F-018: Launch an asset backfill for extract_mineru.
+# Confirmed live against Dagster 1.11.16 (S018-F-018 agreed.md §3).
+_LAUNCH_EXTRACT_BACKFILL_MUTATION = """
+mutation LaunchExtractBackfill($backfillParams: LaunchBackfillParams!) {
+  launchPartitionBackfill(backfillParams: $backfillParams) {
+    __typename
+    ... on LaunchBackfillSuccess {
+      backfillId
+    }
+    ... on PartitionSetNotFoundError {
+      message
+    }
+    ... on PartitionKeysNotFoundError {
+      message
+    }
+    ... on PythonError {
+      message
+    }
+    ... on UnauthorizedError {
+      message
+    }
+    ... on InvalidSubsetError {
+      message
+    }
+    ... on RunConflict {
+      message
+    }
+  }
+}
+"""
+
 # Dagster RunStatus → internal 3-value set (per agreed.md §2.2).
 _TERMINAL_SUCCESS = {"SUCCESS"}
 _TERMINAL_FAILURE = {"FAILURE", "CANCELED"}
@@ -642,6 +673,86 @@ class DagsterGateway:
         raise DagsterGatewayError(
             f"Unexpected reportRunlessAssetEvents typename: {typename}"
         )
+
+    async def launch_extract_backfill(self, partition_keys: list[str]) -> str:
+        """Launch an asset backfill for extract_mineru over the given partition keys.
+
+        Executes the `launchPartitionBackfill` GraphQL mutation. The backfill
+        enqueues one per-partition Dagster run per key in `partition_keys`.
+
+        Args:
+            partition_keys: List of partition keys in "src_{id}" format.
+
+        Returns:
+            The backfillId (string) from LaunchBackfillSuccess.
+
+        Raises DagsterGatewayError for ALL of the following:
+        - httpx network error (ConnectError, TimeoutException, etc.) → 503 from route
+        - HTTP response status is not 2xx → 503 from route
+        - Response body is not valid JSON → 503 from route
+        - Top-level "errors" key present (GraphQL server-side error) → 503 from route
+        - __typename not "LaunchBackfillSuccess" (e.g. PythonError, UnauthorizedError,
+          PartitionSetNotFoundError, PartitionKeysNotFoundError, InvalidSubsetError,
+          RunConflict) → 503 from route
+        - backfillId absent or empty → 503 from route
+        """
+        payload = {
+            "query": _LAUNCH_EXTRACT_BACKFILL_MUTATION,
+            "variables": {
+                "backfillParams": {
+                    "assetSelection": [{"path": ["extract_mineru"]}],
+                    "partitionNames": partition_keys,
+                    "title": "F-018 extract_mineru",
+                }
+            },
+        }
+        try:
+            response = await self._client.post(self._url, json=payload)
+        except httpx.TimeoutException as exc:
+            raise DagsterGatewayError("Dagster request timed out") from exc
+        except httpx.ConnectError as exc:
+            raise DagsterGatewayError("Cannot connect to Dagster") from exc
+        except httpx.HTTPError as exc:
+            raise DagsterGatewayError(f"HTTP error contacting Dagster: {exc}") from exc
+
+        if not response.is_success:
+            raise DagsterGatewayError(
+                f"Dagster returned HTTP {response.status_code}"
+            )
+
+        try:
+            body = response.json()
+        except Exception as exc:
+            raise DagsterGatewayError("Dagster response is not valid JSON") from exc
+
+        errors = body.get("errors")
+        if errors:
+            msg = errors[0].get("message", "unknown GraphQL error") if isinstance(errors, list) else str(errors)
+            raise DagsterGatewayError(f"Dagster GraphQL error: {msg}")
+
+        try:
+            backfill_result = body["data"]["launchPartitionBackfill"]
+        except (KeyError, TypeError) as exc:
+            raise DagsterGatewayError(
+                "Unexpected Dagster launchPartitionBackfill response shape"
+            ) from exc
+
+        typename = backfill_result.get("__typename")
+        if typename != "LaunchBackfillSuccess":
+            msg = backfill_result.get("message", f"launchPartitionBackfill returned {typename}")
+            raise DagsterGatewayError(f"Dagster launchPartitionBackfill failed: {msg}")
+
+        try:
+            backfill_id: str = backfill_result["backfillId"]
+        except (KeyError, TypeError) as exc:
+            raise DagsterGatewayError(
+                "launchPartitionBackfill succeeded but backfillId was absent in response"
+            ) from exc
+
+        if not backfill_id:
+            raise DagsterGatewayError("Dagster returned an empty backfillId")
+
+        return backfill_id
 
     async def aclose(self) -> None:
         """Close the underlying httpx.AsyncClient. Called in lifespan teardown."""

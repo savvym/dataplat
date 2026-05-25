@@ -81,6 +81,53 @@
         ]
       }
     },
+    "/api/runs": {
+      "post": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Trigger MinerU extraction backfill",
+        "description": "Launch a Dagster asset backfill for extract_mineru over the given source IDs. Returns the Dagster backfillId and the Postgres run.id. Returns 404 if any source_id does not exist. Returns 503 if Dagster is unreachable or the backfill launch fails. Requires a valid Bearer JWT (F-008).",
+        "operationId": "trigger_extract_run_api_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunCreateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
+      }
+    },
     "/api/runs/{run_id}": {
       "get": {
         "tags": [
@@ -976,6 +1023,49 @@
         ],
         "title": "OperatorRead",
         "description": "Response schema for a single operator row.\n\nUsed by GET /api/operators (F-016).\n\nFields included per agreed.md \u00a73.4:\n  - id, name, version, category \u2014 required by F-016 V2.\n  - config_schema \u2014 required by F-016 V2; nullable (Optional[dict] in ORM).\n  - input_kind, output_kind \u2014 useful to callers composing pipelines.\n  - image \u2014 operators are identified by their container image.\n  - description \u2014 human-readable label for UI display; nullable.\n  - is_active \u2014 lets clients reason about operator availability; nullable bool.\n\nFields intentionally omitted (internal/operational details deferred to later\nsprints): output_schema, default_config, reference_url, example_input,\nexample_output, entrypoint, estimated_cost_per_unit, rate_limit_per_minute,\ncreated_at."
+      },
+      "RunCreate": {
+        "properties": {
+          "asset": {
+            "type": "string",
+            "const": "extract_mineru",
+            "title": "Asset"
+          },
+          "source_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Source Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "asset",
+          "source_ids"
+        ],
+        "title": "RunCreate",
+        "description": "Request body for POST /api/runs (F-018).\n\nFields:\n    asset: The asset to trigger. Currently only \"extract_mineru\" is supported.\n           Pydantic v2 raises ValidationError for any other value \u2192 FastAPI 422.\n    source_ids: Non-empty list of source IDs to process.\n                min_length=1 enforces non-empty at the schema level \u2192 FastAPI 422."
+      },
+      "RunCreateResponse": {
+        "properties": {
+          "dagster_run_id": {
+            "type": "string",
+            "title": "Dagster Run Id"
+          },
+          "run_id": {
+            "type": "integer",
+            "title": "Run Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dagster_run_id",
+          "run_id"
+        ],
+        "title": "RunCreateResponse",
+        "description": "Response body for POST /api/runs (F-018, HTTP 202 Accepted).\n\nFields:\n    dagster_run_id: The backfillId from LaunchBackfillSuccess.\n    run_id: The Postgres run.id assigned at insert."
       },
       "RunStatusResponse": {
         "properties": {

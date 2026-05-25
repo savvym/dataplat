@@ -1,25 +1,22 @@
-"""Pydantic response schemas for the runs API surface — S005-F-005.
+"""Pydantic response schemas for the runs API surface — S005-F-005, S018-F-018.
 
 These schemas define the JSON shape of responses from:
   - POST /api/admin/runs/hello-world  → LaunchHelloWorldResponse
   - GET  /api/runs/{run_id}           → RunStatusResponse
+  - POST /api/runs                    → RunCreate (request), RunCreateResponse (response)
 
 The `status` field in RunStatusResponse uses a three-value Literal that maps
 Dagster's RunStatus enum per the agreed.md §2.2 mapping table:
   SUCCESS                → "success"
   FAILURE, CANCELED      → "failure"
   all other states       → "running"
-
-Future sprint F-018 will add a `run_id: int` field to LaunchHelloWorldResponse
-(the Postgres business run ID). F-005 intentionally omits it because F-005
-does not write to the `run` Postgres table.
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LaunchHelloWorldResponse(BaseModel):
@@ -46,3 +43,31 @@ class RunStatusResponse(BaseModel):
 
     dagster_run_id: str
     status: Literal["running", "success", "failure"]
+
+
+class RunCreate(BaseModel):
+    """Request body for POST /api/runs (F-018).
+
+    Fields:
+        asset: The asset to trigger. Currently only "extract_mineru" is supported.
+               Pydantic v2 raises ValidationError for any other value → FastAPI 422.
+        source_ids: Non-empty list of source IDs to process.
+                    min_length=1 enforces non-empty at the schema level → FastAPI 422.
+    """
+
+    asset: Literal["extract_mineru"]
+    source_ids: Annotated[list[int], Field(min_length=1)]
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class RunCreateResponse(BaseModel):
+    """Response body for POST /api/runs (F-018, HTTP 202 Accepted).
+
+    Fields:
+        dagster_run_id: The backfillId from LaunchBackfillSuccess.
+        run_id: The Postgres run.id assigned at insert.
+    """
+
+    dagster_run_id: str
+    run_id: int
