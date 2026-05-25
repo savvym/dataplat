@@ -911,6 +911,57 @@ print('  F014-V1 OK: total =', body['total'], 'items =', len(body['items']))
 
     rm -f "$PDF_FILE" /tmp/src_expected_sha256.txt
     ;;
+  operators)
+    # F-015: seed-operators CLI — inserts MinerU extractor row into operator table.
+    COMPOSE="docker/docker-compose.dev.yml"
+    [[ -f "$COMPOSE" ]] || { echo "no $COMPOSE yet"; exit 0; }
+
+    echo "--- operators V1: seed-operators creates exactly one mineru row ---"
+    docker compose -f "$COMPOSE" exec -T fastapi \
+      python -m dataplat_api.cli seed-operators
+
+    # Criterion 1a: row exists with correct category, input_kind, output_kind.
+    # The '|' in the grep pattern is a BRE *literal* character (not alternation) —
+    # it matches the literal '|' separator produced by the SQL '||' concatenation
+    # above.  Do NOT escape it as \| (that would make it alternation in ERE).
+    docker compose -f "$COMPOSE" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "SELECT category || '|' || input_kind || '|' || output_kind
+           FROM operator WHERE name='mineru' AND version='0.1.0'" \
+      | grep -q '^extractor|source|document$' \
+      || { echo "FAIL: operators V1 — row missing or wrong category/input_kind/output_kind"; exit 1; }
+    echo "operators V1 row values: OK"
+
+    # Criterion 1b: exactly 1 row with name='mineru'.
+    docker compose -f "$COMPOSE" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "SELECT COUNT(*) FROM operator WHERE name='mineru'" \
+      | grep -q '^1$' \
+      || { echo "FAIL: operators V1 — expected exactly 1 mineru row"; exit 1; }
+    echo "operators V1 row count: OK"
+
+    echo "--- operators V2: config_schema is valid non-null JSONB ---"
+    # Criterion 2: config_schema is non-null and parseable as JSONB.
+    # The JSONB ->> operator extracts a top-level key as text; if config_schema
+    # is NULL or not a valid JSON object, this returns NULL/empty and the grep fails.
+    docker compose -f "$COMPOSE" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "SELECT config_schema->>'type' FROM operator WHERE name='mineru' AND version='0.1.0'" \
+      | grep -q '^object$' \
+      || { echo "FAIL: operators V2 — config_schema is null or not a JSON object with type=object"; exit 1; }
+    echo "operators V2 config_schema valid JSONB: OK"
+
+    # Idempotency: re-running must exit 0 and not create a second row.
+    echo "--- operators V3: second run is idempotent (no duplicate row) ---"
+    docker compose -f "$COMPOSE" exec -T fastapi \
+      python -m dataplat_api.cli seed-operators
+    docker compose -f "$COMPOSE" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "SELECT COUNT(*) FROM operator WHERE name='mineru'" \
+      | grep -q '^1$' \
+      || { echo "FAIL: operators V3 — second seed run created a duplicate row"; exit 1; }
+    echo "operators V3 idempotency: OK"
+    ;;
   all)
     # smoke first: cheapest check, fails fast if stack is not up at all.
     # apps/api confirmed present since F-001 passes:true.
@@ -926,6 +977,7 @@ print('  F014-V1 OK: total =', body['total'], 'items =', len(body['items']))
     bash "$0" buckets
     bash "$0" dagster
     bash "$0" runs
+    bash "$0" operators   # F-015
     ;;
   *)
     echo "Unknown layer: $LAYER" >&2
