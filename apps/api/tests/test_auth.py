@@ -346,15 +346,32 @@ def test_collections_valid_token_returns_200(client: TestClient) -> None:
     Uses a dependency override on get_current_user (not get_session) so the
     test is a pure route-layer check.  The actual JWT decode path is covered by
     test_collections_jwt_decode_path.
+
+    F-010: the list handler now calls session.execute() twice (page SELECT +
+    COUNT), so get_session must also be overridden to avoid hitting the real
+    engine.  The override returns an empty page and total=0.
     """
     from dataplat_api.auth.dependencies import get_current_user
+    from dataplat_api.db.session import get_session
 
     mock_user = User(id=1, email="test@example.com", hashed_password="$2b$12$hash")
 
     async def _override_current_user() -> User:
         return mock_user
 
+    # Two execute() calls from the list handler: page result (empty) + count=0.
+    page_result = MagicMock()
+    page_result.scalars.return_value.all.return_value = []
+    count_result = MagicMock()
+    count_result.scalar_one.return_value = 0
+
+    async def _override_session() -> AsyncGenerator[AsyncMock, None]:  # type: ignore[misc]
+        session = AsyncMock()
+        session.execute = AsyncMock(side_effect=[page_result, count_result])
+        yield session
+
     app.dependency_overrides[get_current_user] = _override_current_user
+    app.dependency_overrides[get_session] = _override_session
     try:
         response = client.get(
             "/api/sources/collections",
@@ -362,6 +379,7 @@ def test_collections_valid_token_returns_200(client: TestClient) -> None:
         )
     finally:
         app.dependency_overrides.pop(get_current_user, None)
+        app.dependency_overrides.pop(get_session, None)
 
     assert response.status_code == 200
     body = response.json()
@@ -399,13 +417,35 @@ def test_collections_jwt_decode_path(client: TestClient) -> None:
 
     Exercises the full decode path in get_current_user:
       jwt.decode → sub extraction → DB lookup → User returned → 200.
+
+    F-010: the list handler now issues two execute() calls (page SELECT + COUNT)
+    after get_current_user completes its own execute() call for the user lookup.
+    The session mock uses side_effect to serve all three execute() calls in order:
+      1. get_current_user user lookup   → scalar_one_or_none() = real_user
+      2. list handler page SELECT       → scalars().all() = []
+      3. list handler COUNT             → scalar_one() = 0
     """
     from dataplat_api.db.session import get_session
 
     real_user = User(id=1, email="test@example.com", hashed_password="$2b$12$hash")
     valid_token = _mint_token(sub="1")
 
-    app.dependency_overrides[get_session] = _make_session_dependency_for_user(user=real_user)
+    # Result mock for get_current_user's user lookup.
+    auth_result = MagicMock()
+    auth_result.scalar_one_or_none.return_value = real_user
+
+    # Result mocks for the list handler's two execute() calls.
+    page_result = MagicMock()
+    page_result.scalars.return_value.all.return_value = []
+    count_result = MagicMock()
+    count_result.scalar_one.return_value = 0
+
+    async def _override_session() -> AsyncGenerator[AsyncMock, None]:  # type: ignore[misc]
+        session = AsyncMock()
+        session.execute = AsyncMock(side_effect=[auth_result, page_result, count_result])
+        yield session
+
+    app.dependency_overrides[get_session] = _override_session
     try:
         response = client.get(
             "/api/sources/collections",

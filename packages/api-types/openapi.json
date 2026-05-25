@@ -177,8 +177,38 @@
           "sources"
         ],
         "summary": "List Collections",
-        "description": "List source collections.\n\nStub \u2014 body owned by F-010. Auth enforcement is the F-008 deliverable.\nF-010 will add pagination parameters and a real DB query here.",
+        "description": "List source collections owned by the authenticated user.\n\nReturns a paginated list scoped to the caller's owner_id.\n`total` is the count of ALL the caller's collections (not just the current\npage), enabling the client to compute page counts without a second request.\n\nPagination:\n  limit  \u2014 max items per page (1\u2013200, default 20)\n  offset \u2014 number of rows to skip (default 0)\n\nOrdering: id ASC (oldest first, stable).\nAuth required (F-008).",
         "operationId": "list_collections_api_sources_collections_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -189,13 +219,18 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
-        },
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ]
+        }
       },
       "post": {
         "tags": [
@@ -204,15 +239,20 @@
         "summary": "Create Source Collection",
         "description": "Create a new source collection.\n\nCreates a source_collection row in Postgres and returns the new record.\nDuplicate names return 409 (detected via the Postgres UNIQUE constraint\n`source_collection_name_key`). Auth required (F-008).",
         "operationId": "create_collection_api_sources_collections_post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/SourceCollectionCreate"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "201": {
@@ -235,12 +275,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ]
+        }
       }
     }
   },
@@ -306,7 +341,9 @@
       "CollectionListResponse": {
         "properties": {
           "items": {
-            "items": {},
+            "items": {
+              "$ref": "#/components/schemas/SourceCollectionOut"
+            },
             "type": "array",
             "title": "Items"
           },
@@ -321,7 +358,7 @@
           "total"
         ],
         "title": "CollectionListResponse",
-        "description": "Response for GET /api/sources/collections \u2014 stub body owned by F-010."
+        "description": "Response for GET /api/sources/collections (F-010)."
       },
       "DagsterStatusResponse": {
         "properties": {
@@ -482,7 +519,7 @@
           "updated_at"
         ],
         "title": "SourceCollectionOut",
-        "description": "Response schema for a single source_collection row.\n\nUsed by POST /api/sources/collections (F-009) and will be used by\nGET /api/sources/collections items once F-010 narrows CollectionListResponse."
+        "description": "Response schema for a single source_collection row.\n\nUsed by POST /api/sources/collections (F-009) and by\nGET /api/sources/collections list items (F-010)."
       },
       "TokenResponse": {
         "properties": {

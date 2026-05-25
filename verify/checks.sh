@@ -497,6 +497,59 @@ print('  V1 OK: id =', body['id'], 'name =', body['name'])
     test "$DUP_STATUS" = "409" \
       || { echo "FAIL: collections V3 returned $DUP_STATUS (expected 409)"; exit 1; }
     echo "  V3 OK: duplicate name → 409"
+
+    echo "--- collections LIST-V1/V2 setup: create 3 deterministic collections ---"
+    for COLL_NAME in test-coll-list-a test-coll-list-b test-coll-list-c; do
+      SETUP_STATUS=$(curl -sS -X POST \
+        "http://localhost:${FASTAPI_HOST_PORT}/api/sources/collections" \
+        -H "Authorization: Bearer $COLL_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"name\": \"$COLL_NAME\"}" \
+        -o /dev/null -w '%{http_code}')
+      # Accept 201 (created) or 409 (already exists from a previous run) — both OK.
+      [[ "$SETUP_STATUS" == "201" || "$SETUP_STATUS" == "409" ]] \
+        || { echo "FAIL: collections LIST setup for $COLL_NAME returned $SETUP_STATUS"; exit 1; }
+      echo "  setup $COLL_NAME: $SETUP_STATUS"
+    done
+
+    echo "--- collections LIST-V1: GET (no limit) returns total == items count >= 3 ---"
+    LIST_BODY=$(mktemp)
+    LIST_STATUS=$(curl -sS -X GET \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/collections" \
+      -H "Authorization: Bearer $COLL_TOKEN" \
+      -w '%{http_code}' -o "$LIST_BODY")
+    test "$LIST_STATUS" = "200" \
+      || { echo "FAIL: collections LIST-V1 returned $LIST_STATUS: $(cat "$LIST_BODY")"; rm -f "$LIST_BODY"; exit 1; }
+    python3 -c "
+import json, sys
+body = json.load(open('$LIST_BODY'))
+assert 'items' in body, f'missing items key: {body}'
+assert 'total' in body, f'missing total key: {body}'
+assert isinstance(body['total'], int), f'total not int: {body}'
+assert body['total'] >= 3, f'expected total >= 3, got {body[\"total\"]}: {body}'
+assert len(body['items']) >= 3, f'expected >= 3 items, got {len(body[\"items\"])}'
+assert body['total'] == len(body['items']), \
+  f'with no limit param, total should equal items count; got total={body[\"total\"]}, items={len(body[\"items\"])}'
+print('  LIST-V1 OK: total =', body['total'], 'items count =', len(body['items']))
+" || { echo "FAIL: collections LIST-V1 response shape incorrect"; rm -f "$LIST_BODY"; exit 1; }
+    rm -f "$LIST_BODY"
+
+    echo "--- collections LIST-V2: GET ?limit=2 returns 2 items but total >= 3 ---"
+    LIST2_BODY=$(mktemp)
+    LIST2_STATUS=$(curl -sS -X GET \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/collections?limit=2" \
+      -H "Authorization: Bearer $COLL_TOKEN" \
+      -w '%{http_code}' -o "$LIST2_BODY")
+    test "$LIST2_STATUS" = "200" \
+      || { echo "FAIL: collections LIST-V2 returned $LIST2_STATUS: $(cat "$LIST2_BODY")"; rm -f "$LIST2_BODY"; exit 1; }
+    python3 -c "
+import json, sys
+body = json.load(open('$LIST2_BODY'))
+assert len(body.get('items', [])) == 2, f'expected 2 items with limit=2, got {len(body.get(\"items\", []))}: {body}'
+assert body.get('total', 0) >= 3, f'expected total >= 3, got {body.get(\"total\")}: {body}'
+print('  LIST-V2 OK: items =', len(body['items']), 'total =', body['total'])
+" || { echo "FAIL: collections LIST-V2 response shape incorrect"; rm -f "$LIST2_BODY"; exit 1; }
+    rm -f "$LIST2_BODY"
     ;;
   all)
     # smoke first: cheapest check, fails fast if stack is not up at all.
