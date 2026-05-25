@@ -1,7 +1,8 @@
-"""Operators router — S016-F-016.
+"""Operators router — S016-F-016 / S017-F-017.
 
 Provides:
-  GET /api/operators          — list all active operators (optional ?category= filter)
+  GET /api/operators               — list all active operators (optional ?category= filter)
+  GET /api/operators/{operator_id} — full operator detail record (F-017)
 
 Auth enforcement (Depends(get_current_user)) is the F-008 deliverable and
 MUST NOT be removed from any handler.
@@ -27,14 +28,14 @@ Ordering (agreed.md §5):
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataplat_api.auth.dependencies import get_current_user
 from dataplat_api.db.models import Operator, User
 from dataplat_api.db.session import get_session
-from dataplat_api.schemas.operators import OperatorRead
+from dataplat_api.schemas.operators import OperatorDetail, OperatorRead
 
 router = APIRouter(prefix="/api/operators", tags=["operators"])
 
@@ -76,3 +77,33 @@ async def list_operators(
     rows = result.scalars().all()
 
     return [OperatorRead.model_validate(row) for row in rows]
+
+
+@router.get("/{operator_id}", response_model=OperatorDetail, summary="Get Operator Detail")
+async def get_operator(
+    operator_id: int,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> OperatorDetail:
+    """Return the full operator record for the given id.
+
+    Operators are a global registry — there is no owner_id column and no
+    ownership scoping. Any authenticated user can retrieve any operator by id.
+    This differs from sources (owner-scoped) and collections (owner-scoped).
+
+    Returns 404 if no operator row with operator_id exists.
+    Returns 401 if the Bearer token is absent, invalid, or expired.
+    Returns 422 if operator_id is not a valid integer (FastAPI default).
+
+    Auth required (F-008).
+    """
+    result = await session.execute(
+        select(Operator).where(Operator.id == operator_id)
+    )
+    operator = result.scalar_one_or_none()
+    if operator is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Operator not found",
+        )
+    return OperatorDetail.model_validate(operator)

@@ -1048,6 +1048,71 @@ print('  F016-V3 OK: category=tagger -> 200 + list of len', len(body),
       '(empty is expected — no tagger seeded yet)')
 " || { echo "FAIL: F016-V3 assertion failed"; rm -f "$V3_BODY"; exit 1; }
     rm -f "$V3_BODY"
+
+    # F-017: GET /api/operators/{operator_id} — operator detail endpoint.
+    # $OP_TOKEN and $FASTAPI_HOST_PORT are already in scope from the F016 block above.
+
+    echo "--- operators F017: derive mineru id dynamically ---"
+    # Fetch from the list endpoint rather than hardcoding id=1. Robust against
+    # re-seeding or DB truncation between runs. No 2>&1: stderr stays on terminal
+    # and is never captured into $MINERU_ID. The || guard catches python sys.exit(1).
+    MINERU_ID_BODY=$(mktemp)
+    curl -sS -X GET \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/operators?category=extractor" \
+      -H "Authorization: Bearer $OP_TOKEN" \
+      -o "$MINERU_ID_BODY"
+    MINERU_ID=$(python3 -c "
+import json, sys
+body = json.load(open('$MINERU_ID_BODY'))
+mineru = next((op for op in body if op['name'] == 'mineru'), None)
+if mineru is None:
+    sys.exit(1)
+print(mineru['id'], end='')
+") || { echo "FAIL: F017 could not derive mineru id from extractor list"; rm -f "$MINERU_ID_BODY"; exit 1; }
+    rm -f "$MINERU_ID_BODY"
+    echo "  F017 mineru id derived: $MINERU_ID"
+
+    echo "--- operators F017-V1: GET /api/operators/${MINERU_ID} returns 200 + full fields ---"
+    V1_DETAIL_BODY=$(mktemp)
+    V1_DETAIL_STATUS=$(curl -sS -X GET \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/operators/${MINERU_ID}" \
+      -H "Authorization: Bearer $OP_TOKEN" \
+      -w '%{http_code}' -o "$V1_DETAIL_BODY")
+    test "$V1_DETAIL_STATUS" = "200" \
+      || { echo "FAIL: F017-V1 returned $V1_DETAIL_STATUS: $(cat "$V1_DETAIL_BODY")"; rm -f "$V1_DETAIL_BODY"; exit 1; }
+    python3 -c "
+import json, sys
+body = json.load(open('$V1_DETAIL_BODY'))
+required_base = ['id', 'name', 'version', 'category', 'input_kind', 'output_kind', 'image', 'is_active']
+required_jsonb = ['config_schema', 'output_schema', 'default_config']
+for field in required_base + required_jsonb:
+    assert field in body, f'missing field {field!r}: {body}'
+assert body['id'] == ${MINERU_ID}, f'id mismatch: {body}'
+assert body['name'] == 'mineru', f'name mismatch: {body}'
+assert body['version'] == '0.1.0', f'version wrong: {body}'
+assert body['category'] == 'extractor', f'category wrong: {body}'
+# config_schema: must be a dict with type=object (per seed).
+assert isinstance(body['config_schema'], dict), f'config_schema not dict: {body[\"config_schema\"]}'
+assert body['config_schema'].get('type') == 'object', f'config_schema type != object: {body[\"config_schema\"]}'
+# output_schema: seed never sets it — key present but value is None.
+assert 'output_schema' in body, f'output_schema key missing: {body}'
+# default_config: server_default fires at INSERT; a fresh SELECT returns the stored
+# value {}. Strict dict assertion — None is not accepted (agreed.md §5 OQ-2 DECIDED).
+assert isinstance(body['default_config'], dict), f'default_config not a dict: {body[\"default_config\"]}'
+print('  F017-V1 OK: id=%d name=%s config_schema.type=%s output_schema=%s default_config=%s' % (
+  body['id'], body['name'], body['config_schema']['type'],
+  type(body['output_schema']).__name__, body['default_config']))
+" || { echo "FAIL: F017-V1 assertion failed"; rm -f "$V1_DETAIL_BODY"; exit 1; }
+    rm -f "$V1_DETAIL_BODY"
+
+    echo "--- operators F017-V2: GET /api/operators/99999 returns 404 ---"
+    V2_NOTFOUND_STATUS=$(curl -sS -X GET \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/operators/99999" \
+      -H "Authorization: Bearer $OP_TOKEN" \
+      -o /dev/null -w '%{http_code}')
+    test "$V2_NOTFOUND_STATUS" = "404" \
+      || { echo "FAIL: F017-V2 returned $V2_NOTFOUND_STATUS (expected 404)"; exit 1; }
+    echo "  F017-V2 OK: /api/operators/99999 → 404"
     ;;
   all)
     # smoke first: cheapest check, fails fast if stack is not up at all.

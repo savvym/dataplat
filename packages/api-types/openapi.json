@@ -504,6 +504,54 @@
           }
         }
       }
+    },
+    "/api/operators/{operator_id}": {
+      "get": {
+        "tags": [
+          "operators"
+        ],
+        "summary": "Get Operator Detail",
+        "description": "Return the full operator record for the given id.\n\nOperators are a global registry \u2014 there is no owner_id column and no\nownership scoping. Any authenticated user can retrieve any operator by id.\nThis differs from sources (owner-scoped) and collections (owner-scoped).\n\nReturns 404 if no operator row with operator_id exists.\nReturns 401 if the Bearer token is absent, invalid, or expired.\nReturns 422 if operator_id is not a valid integer (FastAPI default).\n\nAuth required (F-008).",
+        "operationId": "get_operator_api_operators__operator_id__get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "operator_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Operator Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -652,6 +700,201 @@
         ],
         "title": "LaunchHelloWorldResponse",
         "description": "Response body for POST /api/admin/runs/hello-world (HTTP 201 Created).\n\nFields:\n    dagster_run_id: The Dagster run UUID assigned by the webserver.\n        Matches design doc \u00a74.1 column name `dagster_run_id TEXT UNIQUE NOT NULL`."
+      },
+      "OperatorDetail": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "category": {
+            "type": "string",
+            "title": "Category"
+          },
+          "input_kind": {
+            "type": "string",
+            "title": "Input Kind"
+          },
+          "output_kind": {
+            "type": "string",
+            "title": "Output Kind"
+          },
+          "image": {
+            "type": "string",
+            "title": "Image"
+          },
+          "output_schema": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Schema"
+          },
+          "config_schema": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Schema"
+          },
+          "default_config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Config"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "reference_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Url"
+          },
+          "example_input": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Example Input"
+          },
+          "example_output": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Example Output"
+          },
+          "entrypoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entrypoint"
+          },
+          "estimated_cost_per_unit": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Per Unit"
+          },
+          "rate_limit_per_minute": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate Limit Per Minute"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "version",
+          "category",
+          "input_kind",
+          "output_kind",
+          "image",
+          "output_schema",
+          "config_schema",
+          "default_config",
+          "description",
+          "reference_url",
+          "example_input",
+          "example_output",
+          "entrypoint",
+          "estimated_cost_per_unit",
+          "rate_limit_per_minute",
+          "is_active",
+          "created_at"
+        ],
+        "title": "OperatorDetail",
+        "description": "Full operator record for GET /api/operators/{operator_id} (F-017).\n\nExposes all 19 ORM columns. Nullability matches Mapped[Optional[...]] exactly:\n  NOT NULL: id, name, version, category, input_kind, output_kind, image.\n  nullable:  output_schema, config_schema, default_config, description,\n             reference_url, example_input, example_output, entrypoint,\n             estimated_cost_per_unit, rate_limit_per_minute, is_active, created_at.\n\ndefault_config has server_default '{}'::jsonb \u2014 a fresh SELECT always returns\na dict (empty is valid). output_schema is NULL for the MinerU seed row (seed\nnever sets it); the key is present in the response but the value is None."
       },
       "OperatorRead": {
         "properties": {
