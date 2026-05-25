@@ -324,6 +324,54 @@
           }
         ]
       }
+    },
+    "/api/sources/{id}": {
+      "get": {
+        "tags": [
+          "sources"
+        ],
+        "summary": "Get Source Detail",
+        "description": "Return the full source record for the given id.\n\nOwner-scoping (F-013 agreed.md \u00a73):\n  - Sources in a collection owned by the caller \u2192 visible.\n  - Sources with no collection (collection_id IS NULL) \u2192 visible to any\n    authenticated user (no owner_id column on source; strict scoping would\n    require a migration, deferred to a later sprint).\n  - Sources in another user's collection \u2192 404 (prevents enumeration).\n\nReturns 404 (not 403) for both \"does not exist\" and \"not accessible\" cases\nto avoid leaking existence information (same pattern as F-010 collections).\n\nAuth required (F-008).",
+        "operationId": "get_source_api_sources__id__get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -593,6 +641,94 @@
         "title": "SourceCollectionOut",
         "description": "Response schema for a single source_collection row.\n\nUsed by POST /api/sources/collections (F-009) and by\nGET /api/sources/collections list items (F-010)."
       },
+      "SourceRead": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "collection_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "original_name": {
+            "type": "string",
+            "title": "Original Name"
+          },
+          "storage_uri": {
+            "type": "string",
+            "title": "Storage Uri"
+          },
+          "sha256": {
+            "type": "string",
+            "title": "Sha256"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          },
+          "mime_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mime Type"
+          },
+          "dagster_partition_key": {
+            "type": "string",
+            "title": "Dagster Partition Key"
+          },
+          "uploaded_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploaded At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "collection_id",
+          "kind",
+          "original_name",
+          "storage_uri",
+          "sha256",
+          "size",
+          "mime_type",
+          "dagster_partition_key",
+          "uploaded_at"
+        ],
+        "title": "SourceRead",
+        "description": "Response schema for GET /api/sources/{id} (F-013).\n\nReturns the full source record. Fields omitted (license, source_metadata,\npreferred_extractor) are optional extension columns deferred to a later sprint."
+      },
       "SourceUploadResponse": {
         "properties": {
           "id": {
@@ -610,7 +746,7 @@
           "storage_uri"
         ],
         "title": "SourceUploadResponse",
-        "description": "Response schema for POST /api/sources/upload.\n\nMinimal per F-011 verification criteria V1:\n  {\"id\": <int>, \"storage_uri\": \"s3://sources/<id>/original.pdf\"}\n\nAdditional source fields (sha256, kind, mime_type, collection_id,\noriginal_name) are deferred to the F-013 GET detail endpoint."
+        "description": "Response schema for POST /api/sources/upload.\n\nMinimal per F-011 verification criteria V1:\n  {\"id\": <int>, \"storage_uri\": \"s3://sources/<id>/original.pdf\"}\n\nAdditional source fields (sha256, kind, mime_type, collection_id,\noriginal_name) are available via the F-013 GET detail endpoint."
       },
       "TokenResponse": {
         "properties": {

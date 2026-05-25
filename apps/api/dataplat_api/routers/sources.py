@@ -1,13 +1,17 @@
 """Sources router — S008-F-008 stub + S009-F-009 POST + S010-F-010 GET list
-+ S011-F-011 POST /upload + S012-F-012 Dagster notify.
++ S011-F-011 POST /upload + S012-F-012 Dagster notify + S013-F-013 GET /{id}.
 
 Provides:
   GET  /api/sources/collections — paginated list of caller's collections (F-010).
   POST /api/sources/collections — create a source_collection row (F-009).
   POST /api/sources/upload      — upload a PDF source file (F-011).
+  GET  /api/sources/{id}        — full source detail record (F-013).
 
 Auth enforcement (Depends(get_current_user)) is the F-008 deliverable and
 MUST NOT be removed from any handler.
+
+Route-ordering note (F-013): GET /{id} is registered LAST so that the fixed
+paths /collections and /upload are matched first by FastAPI's router.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,7 +37,7 @@ from dataplat_api.schemas.collections import (
     SourceCollectionCreate,
     SourceCollectionOut,
 )
-from dataplat_api.schemas.sources import SourceUploadResponse
+from dataplat_api.schemas.sources import SourceRead, SourceUploadResponse
 from dataplat_api.storage.s3 import get_s3_client
 
 logger = logging.getLogger(__name__)
@@ -251,3 +255,43 @@ async def upload_source(
 
     # Step 12: return minimal response per agreed.md §3-D8.
     return SourceUploadResponse(id=source.id, storage_uri=source.storage_uri)
+
+
+@router.get("/{id}", response_model=SourceRead, summary="Get Source Detail")
+async def get_source(
+    id: int,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> SourceRead:
+    """Return the full source record for the given id.
+
+    Owner-scoping (F-013 agreed.md §3):
+      - Sources in a collection owned by the caller → visible.
+      - Sources with no collection (collection_id IS NULL) → visible to any
+        authenticated user (no owner_id column on source; strict scoping would
+        require a migration, deferred to a later sprint).
+      - Sources in another user's collection → 404 (prevents enumeration).
+
+    Returns 404 (not 403) for both "does not exist" and "not accessible" cases
+    to avoid leaking existence information (same pattern as F-010 collections).
+
+    Auth required (F-008).
+    """
+    result = await session.execute(
+        select(Source)
+        .join(SourceCollection, Source.collection_id == SourceCollection.id, isouter=True)
+        .where(Source.id == id)
+        .where(
+            or_(
+                SourceCollection.owner_id == current_user.id,
+                Source.collection_id.is_(None),
+            )
+        )
+    )
+    source = result.scalar_one_or_none()
+    if source is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source not found",
+        )
+    return SourceRead.model_validate(source)

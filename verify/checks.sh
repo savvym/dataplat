@@ -790,6 +790,39 @@ except Exception as e:
       || { echo "FAIL: mime_type != 'application/pdf': $ROW"; rm -f "$PDF_FILE" /tmp/src_expected_sha256.txt; exit 1; }
     echo "  UPLOAD-V4 OK: kind=file mime_type=application/pdf"
 
+    echo "--- sources F013-V1: GET /api/sources/{id} returns 200 with required fields ---"
+    DETAIL_BODY=$(mktemp)
+    DETAIL_STATUS=$(curl -sS -X GET \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/${SRC_ID}" \
+      -H "Authorization: Bearer $SRC_TOKEN" \
+      -w '%{http_code}' -o "$DETAIL_BODY")
+    test "$DETAIL_STATUS" = "200" \
+      || { echo "FAIL: F013-V1 returned $DETAIL_STATUS: $(cat "$DETAIL_BODY")"; rm -f "$DETAIL_BODY" "$PDF_FILE" /tmp/src_expected_sha256.txt; exit 1; }
+    python3 -c "
+import json, sys
+body = json.load(open('$DETAIL_BODY'))
+required = ['id', 'storage_uri', 'sha256', 'size', 'mime_type', 'collection_id',
+            'kind', 'original_name', 'dagster_partition_key', 'uploaded_at']
+for field in required:
+    assert field in body, f'missing field {field}: {body}'
+assert body['id'] == ${SRC_ID}, f'id mismatch: {body}'
+assert body['storage_uri'] == f\"s3://sources/${SRC_ID}/original.pdf\", f'storage_uri wrong: {body}'
+assert body['sha256'], f'sha256 empty: {body}'
+assert body['mime_type'] == 'application/pdf', f'mime_type wrong: {body}'
+assert body['kind'] == 'file', f'kind wrong: {body}'
+print('  F013-V1 OK: all required fields present, id=%d' % body['id'])
+" || { echo "FAIL: F013-V1 response shape incorrect"; rm -f "$DETAIL_BODY" "$PDF_FILE" /tmp/src_expected_sha256.txt; exit 1; }
+    rm -f "$DETAIL_BODY"
+
+    echo "--- sources F013-V2: GET /api/sources/99999 returns 404 ---"
+    NOTFOUND_STATUS=$(curl -sS -X GET \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/99999" \
+      -H "Authorization: Bearer $SRC_TOKEN" \
+      -o /dev/null -w '%{http_code}')
+    test "$NOTFOUND_STATUS" = "404" \
+      || { echo "FAIL: F013-V2 returned $NOTFOUND_STATUS (expected 404)"; rm -f "$PDF_FILE" /tmp/src_expected_sha256.txt; exit 1; }
+    echo "  F013-V2 OK: /api/sources/99999 -> 404"
+
     rm -f "$PDF_FILE" /tmp/src_expected_sha256.txt
     ;;
   all)

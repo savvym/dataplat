@@ -1,15 +1,17 @@
-"""Source schemas — S011-F-011.
+"""Source schemas — S011-F-011 / S013-F-013.
 
 Schemas:
   - SourceUploadResponse: response for POST /api/sources/upload (F-011).
       Contains only id and storage_uri per agreed.md §3-D8 (minimal response).
-      Full source detail (sha256, kind, mime_type, etc.) will be defined by
-      F-013 (GET /api/sources/{id}).
+  - SourceRead: response for GET /api/sources/{id} (F-013).
+      Full source record with all 10 fields.
 """
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict
 
 
 class SourceUploadResponse(BaseModel):
@@ -19,8 +21,29 @@ class SourceUploadResponse(BaseModel):
       {"id": <int>, "storage_uri": "s3://sources/<id>/original.pdf"}
 
     Additional source fields (sha256, kind, mime_type, collection_id,
-    original_name) are deferred to the F-013 GET detail endpoint.
+    original_name) are available via the F-013 GET detail endpoint.
     """
 
     id: int
     storage_uri: str
+
+
+class SourceRead(BaseModel):
+    """Response schema for GET /api/sources/{id} (F-013).
+
+    Returns the full source record. Fields omitted (license, source_metadata,
+    preferred_extractor) are optional extension columns deferred to a later sprint.
+    """
+
+    id: int
+    collection_id: int | None
+    kind: str
+    original_name: str
+    storage_uri: str
+    sha256: str
+    size: int | None
+    mime_type: str | None
+    dagster_partition_key: str
+    uploaded_at: datetime | None
+
+    model_config = ConfigDict(from_attributes=True)
