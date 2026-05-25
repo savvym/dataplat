@@ -277,6 +277,53 @@
           }
         }
       }
+    },
+    "/api/sources/upload": {
+      "post": {
+        "tags": [
+          "sources"
+        ],
+        "summary": "Upload PDF Source",
+        "description": "Upload a PDF file as a new source.\n\nStores the file in MinIO at s3://sources/{source_id}/original.pdf and\nwrites a source row to Postgres with sha256, storage_uri, kind='file',\nmime_type='application/pdf'.  Returns the new source id and storage_uri.\n\nAtomicity (agreed.md \u00a73-D3):\n  flush (get id) \u2192 set uri/partition_key \u2192 S3 upload \u2192 commit.\n  If S3 upload fails, the exception propagates; the open DB transaction is\n  implicitly rolled back when the connection returns to the pool (the\n  get_session() context manager calls session.close(), NOT rollback()).\n  Do NOT add explicit session.rollback() here \u2014 let exceptions propagate.\n  Known acceptable leak: if commit() fails after a successful S3 upload,\n  the MinIO object persists with no corresponding DB row (agreed.md \u00a73-D6).\n\nAuth required (F-008).",
+        "operationId": "upload_source_api_sources_upload_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_source_api_sources_upload_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceUploadResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -337,6 +384,31 @@
           "password"
         ],
         "title": "Body_login_api_auth_token_post"
+      },
+      "Body_upload_source_api_sources_upload_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          },
+          "collection_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_source_api_sources_upload_post"
       },
       "CollectionListResponse": {
         "properties": {
@@ -520,6 +592,25 @@
         ],
         "title": "SourceCollectionOut",
         "description": "Response schema for a single source_collection row.\n\nUsed by POST /api/sources/collections (F-009) and by\nGET /api/sources/collections list items (F-010)."
+      },
+      "SourceUploadResponse": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "storage_uri": {
+            "type": "string",
+            "title": "Storage Uri"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "storage_uri"
+        ],
+        "title": "SourceUploadResponse",
+        "description": "Response schema for POST /api/sources/upload.\n\nMinimal per F-011 verification criteria V1:\n  {\"id\": <int>, \"storage_uri\": \"s3://sources/<id>/original.pdf\"}\n\nAdditional source fields (sha256, kind, mime_type, collection_id,\noriginal_name) are deferred to the F-013 GET detail endpoint."
       },
       "TokenResponse": {
         "properties": {

@@ -551,6 +551,112 @@ print('  LIST-V2 OK: items =', len(body['items']), 'total =', body['total'])
 " || { echo "FAIL: collections LIST-V2 response shape incorrect"; rm -f "$LIST2_BODY"; exit 1; }
     rm -f "$LIST2_BODY"
     ;;
+  sources)
+    # F-011: POST /api/sources/upload — store PDF in MinIO, source row with sha256+storage_uri
+    COMPOSE="docker/docker-compose.dev.yml"
+    [[ -f "$COMPOSE" ]] || { echo "no $COMPOSE yet"; exit 0; }
+
+    FASTAPI_HOST_PORT="${FASTAPI_HOST_PORT:-18000}"
+    MINIO_USER="${MINIO_ROOT_USER:-minioadmin}"
+    MINIO_PASS="${MINIO_ROOT_PASSWORD:-devpassword}"
+
+    echo "--- sources: mint Bearer token ---"
+    SRC_TOKEN_BODY=$(mktemp)
+    SRC_TOKEN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/auth/token" \
+      -d "username=admin@example.com&password=testpassword123" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -w '%{http_code}' -o "$SRC_TOKEN_BODY")
+    test "$SRC_TOKEN_STATUS" = "200" \
+      || { echo "FAIL: sources) could not mint token (status $SRC_TOKEN_STATUS) — run 'bash $0 auth' first"; rm -f "$SRC_TOKEN_BODY"; exit 1; }
+    SRC_TOKEN=$(python3 -c "import json; print(json.load(open('$SRC_TOKEN_BODY'))['access_token'])")
+    rm -f "$SRC_TOKEN_BODY"
+
+    echo "--- sources: generate minimal valid PDF fixture ---"
+    PDF_FILE=$(mktemp /tmp/test-XXXXXX.pdf)
+    python3 -c "
+import sys
+pdf = (
+    b'%PDF-1.4\n'
+    b'1 0 obj<</Type /Catalog /Pages 2 0 R>>endobj\n'
+    b'2 0 obj<</Type /Pages /Kids[3 0 R] /Count 1>>endobj\n'
+    b'3 0 obj<</Type /Page /MediaBox[0 0 612 792] /Parent 2 0 R>>endobj\n'
+    b'xref\n0 4\n'
+    b'0000000000 65535 f \n'
+    b'0000000009 00000 n \n'
+    b'0000000058 00000 n \n'
+    b'0000000115 00000 n \n'
+    b'trailer<</Size 4 /Root 1 0 R>>\n'
+    b'startxref\n182\n%%EOF\n'
+)
+with open('$PDF_FILE', 'wb') as f:
+    f.write(pdf)
+print(__import__('hashlib').sha256(pdf).hexdigest())
+" > /tmp/src_expected_sha256.txt \
+      || { echo "FAIL: sources) could not generate PDF fixture"; rm -f "$PDF_FILE"; exit 1; }
+    EXPECTED_SHA256=$(cat /tmp/src_expected_sha256.txt)
+
+    echo "--- sources UPLOAD-V1: POST /api/sources/upload returns 201 ---"
+    UPLOAD_BODY=$(mktemp)
+    UPLOAD_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/upload" \
+      -H "Authorization: Bearer $SRC_TOKEN" \
+      -F "file=@${PDF_FILE};type=application/pdf" \
+      -w '%{http_code}' -o "$UPLOAD_BODY")
+    test "$UPLOAD_STATUS" = "201" \
+      || { echo "FAIL: sources UPLOAD-V1 returned $UPLOAD_STATUS: $(cat "$UPLOAD_BODY")"; rm -f "$UPLOAD_BODY" "$PDF_FILE" /tmp/src_expected_sha256.txt; exit 1; }
+    SRC_ID=$(python3 -c "
+import json, re, sys
+body = json.load(open('$UPLOAD_BODY'))
+assert isinstance(body.get('id'), int), f'id not int: {body}'
+uri = body.get('storage_uri', '')
+assert re.match(r'^s3://sources/[0-9]+/original\.pdf$', uri), f'storage_uri shape wrong: {uri}'
+assert uri == f\"s3://sources/{body['id']}/original.pdf\", f'id/uri mismatch: {body}'
+print(body['id'])
+" 2>&1) || { echo "FAIL: sources UPLOAD-V1 response shape incorrect: $SRC_ID"; rm -f "$UPLOAD_BODY" "$PDF_FILE" /tmp/src_expected_sha256.txt; exit 1; }
+    echo "  UPLOAD-V1 OK: id=$SRC_ID storage_uri=s3://sources/${SRC_ID}/original.pdf"
+    rm -f "$UPLOAD_BODY"
+
+    echo "--- sources UPLOAD-V2: file exists in MinIO at sources/${SRC_ID}/original.pdf ---"
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${SRC_ID}" \
+      fastapi python -c "
+import boto3, os, sys
+s3 = boto3.client('s3', endpoint_url='http://minio:9000',
+    aws_access_key_id=os.environ['S3_USER'],
+    aws_secret_access_key=os.environ['S3_PASS'])
+src_id = os.environ['SRC_ID']
+key = f'sources/{src_id}/original.pdf'
+try:
+    s3.head_object(Bucket='sources', Key=key)
+    print(f'  UPLOAD-V2 OK: object exists at {key}')
+except Exception as e:
+    print(f'FAIL: head_object raised {e}', file=sys.stderr)
+    sys.exit(1)
+" || { echo "FAIL: sources UPLOAD-V2 MinIO head_object failed"; rm -f "$PDF_FILE" /tmp/src_expected_sha256.txt; exit 1; }
+
+    echo "--- sources UPLOAD-V3: Postgres sha256 matches uploaded file ---"
+    DB_SHA256=$(docker compose -f "$COMPOSE" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "SELECT sha256 FROM source WHERE id=${SRC_ID}")
+    DB_SHA256=$(echo "$DB_SHA256" | tr -d '[:space:]')
+    test "$DB_SHA256" = "$EXPECTED_SHA256" \
+      || { echo "FAIL: sha256 mismatch: DB='$DB_SHA256' expected='$EXPECTED_SHA256'"; rm -f "$PDF_FILE" /tmp/src_expected_sha256.txt; exit 1; }
+    echo "  UPLOAD-V3 OK: sha256=$DB_SHA256"
+
+    echo "--- sources UPLOAD-V4: kind='file', mime_type='application/pdf' in Postgres ---"
+    ROW=$(docker compose -f "$COMPOSE" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "SELECT kind, mime_type FROM source WHERE id=${SRC_ID}")
+    echo "$ROW" | grep -q "file" \
+      || { echo "FAIL: kind != 'file': $ROW"; rm -f "$PDF_FILE" /tmp/src_expected_sha256.txt; exit 1; }
+    echo "$ROW" | grep -q "application/pdf" \
+      || { echo "FAIL: mime_type != 'application/pdf': $ROW"; rm -f "$PDF_FILE" /tmp/src_expected_sha256.txt; exit 1; }
+    echo "  UPLOAD-V4 OK: kind=file mime_type=application/pdf"
+
+    rm -f "$PDF_FILE" /tmp/src_expected_sha256.txt
+    ;;
   all)
     # smoke first: cheapest check, fails fast if stack is not up at all.
     # apps/api confirmed present since F-001 passes:true.
@@ -562,6 +668,7 @@ print('  LIST-V2 OK: items =', len(body['items']), 'total =', body['total'])
     bash "$0" migration
     bash "$0" auth
     bash "$0" collections
+    bash "$0" sources
     bash "$0" buckets
     bash "$0" dagster
     bash "$0" runs

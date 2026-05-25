@@ -1,28 +1,37 @@
-"""Sources router — S008-F-008 stub + S009-F-009 POST + S010-F-010 GET list.
+"""Sources router — S008-F-008 stub + S009-F-009 POST + S010-F-010 GET list
++ S011-F-011 POST /upload.
 
 Provides:
   GET  /api/sources/collections — paginated list of caller's collections (F-010).
   POST /api/sources/collections — create a source_collection row (F-009).
+  POST /api/sources/upload      — upload a PDF source file (F-011).
 
 Auth enforcement (Depends(get_current_user)) is the F-008 deliverable and
-MUST NOT be removed from either handler.
+MUST NOT be removed from any handler.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import hashlib
+import uuid
+from typing import Any
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataplat_api.auth.dependencies import get_current_user
-from dataplat_api.db.models import SourceCollection, User
+from dataplat_api.config import settings
+from dataplat_api.db.models import Source, SourceCollection, User
 from dataplat_api.db.session import get_session
 from dataplat_api.schemas.collections import (
     CollectionListResponse,
     SourceCollectionCreate,
     SourceCollectionOut,
 )
+from dataplat_api.schemas.sources import SourceUploadResponse
+from dataplat_api.storage.s3 import get_s3_client
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
@@ -108,3 +117,94 @@ async def create_collection(
         raise
 
     return SourceCollectionOut.model_validate(collection)
+
+
+@router.post(
+    "/upload",
+    response_model=SourceUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload PDF Source",
+)
+async def upload_source(
+    file: UploadFile = File(...),
+    collection_id: int | None = Form(default=None),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+    s3: Any = Depends(get_s3_client),
+) -> SourceUploadResponse:
+    """Upload a PDF file as a new source.
+
+    Stores the file in MinIO at s3://sources/{source_id}/original.pdf and
+    writes a source row to Postgres with sha256, storage_uri, kind='file',
+    mime_type='application/pdf'.  Returns the new source id and storage_uri.
+
+    Atomicity (agreed.md §3-D3):
+      flush (get id) → set uri/partition_key → S3 upload → commit.
+      If S3 upload fails, the exception propagates; the open DB transaction is
+      implicitly rolled back when the connection returns to the pool (the
+      get_session() context manager calls session.close(), NOT rollback()).
+      Do NOT add explicit session.rollback() here — let exceptions propagate.
+      Known acceptable leak: if commit() fails after a successful S3 upload,
+      the MinIO object persists with no corresponding DB row (agreed.md §3-D6).
+
+    Auth required (F-008).
+    """
+    # Step 1: validate content-type before touching any bytes or the DB.
+    if file.content_type != "application/pdf":
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Only application/pdf uploads are accepted",
+        )
+
+    # Step 2-5: read bytes + compute sha256 + size + original_name.
+    content: bytes = await file.read()
+    sha256_hex = hashlib.sha256(content).hexdigest()
+    size_bytes = len(content)
+    original_name = file.filename or "upload.pdf"
+
+    # Step 6: build Source ORM object with placeholder values for the two
+    # NOT NULL id-dependent fields.
+    # - storage_uri: constant placeholder is safe (no UNIQUE constraint).
+    # - dagster_partition_key: MUST be unique per request (UNIQUE constraint);
+    #   uuid4().hex is cryptographically random and collision-proof under
+    #   concurrent async requests.  Do NOT use id(source)/id(object()) —
+    #   CPython reuses freed object addresses (agreed.md §3-D3).
+    source = Source(
+        kind="file",
+        original_name=original_name,
+        sha256=sha256_hex,
+        size=size_bytes,
+        mime_type="application/pdf",
+        collection_id=collection_id,
+        storage_uri="__pending__",
+        dagster_partition_key=f"src_tmp_{uuid.uuid4().hex}",
+    )
+    session.add(source)
+
+    # Step 4 (agreed.md §3-D3 sequence): flush to get DB-assigned id.
+    # No COMMIT yet — transaction remains open.
+    await session.flush()
+
+    # Steps 7-9: now that source.id is populated, derive the final values.
+    # session.commit() auto-flushes dirty attrs, so these overwrites will
+    # persist without a second flush.
+    source.storage_uri = f"s3://sources/{source.id}/original.pdf"
+    source.dagster_partition_key = f"src_{source.id}"
+
+    # Step 10: upload to MinIO BEFORE commit.  If this raises, the exception
+    # propagates and the uncommitted transaction is implicitly rolled back.
+    # Do NOT wrap in a swallowing try/except; do NOT call session.rollback().
+    s3_key = f"sources/{source.id}/original.pdf"
+    await s3.put_object(
+        Bucket=settings.MINIO_SOURCES_BUCKET,
+        Key=s3_key,
+        Body=content,
+        ContentType="application/pdf",
+    )
+
+    # Step 11: commit — row is now durable with correct storage_uri and
+    # dagster_partition_key.
+    await session.commit()
+
+    # Step 12: return minimal response per agreed.md §3-D8.
+    return SourceUploadResponse(id=source.id, storage_uri=source.storage_uri)
