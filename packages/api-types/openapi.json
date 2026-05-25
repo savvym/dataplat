@@ -443,6 +443,67 @@
           }
         }
       }
+    },
+    "/api/operators": {
+      "get": {
+        "tags": [
+          "operators"
+        ],
+        "summary": "List Operators",
+        "description": "List active operators, optionally filtered by category.\n\nReturns a plain JSON array of OperatorRead objects. All authenticated users\ncan list operators \u2014 no ownership scoping applies (operators are global\nregistry entries, not user-owned resources).\n\nActive scoping:\n  `is_active IS NOT FALSE` \u2014 rows with is_active=true OR is_active=NULL are\n  included; rows with is_active=false are excluded. This is the correct\n  expression when the column is nullable with a server-side default of true.\n\nCategory filter:\n  If ?category= is provided, further restricts to operators with that exact\n  category value. An unknown category value returns HTTP 200 + [].\n\nOrdering: id ASC (stable, oldest-first, consistent with all other list endpoints).\n\nAuth required (F-008).",
+        "operationId": "list_operators_api_operators_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by operator category (e.g. 'extractor', 'tagger'). Optional. Unknown categories return an empty array.",
+              "title": "Category"
+            },
+            "description": "Filter by operator category (e.g. 'extractor', 'tagger'). Optional. Unknown categories return an empty array."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OperatorRead"
+                  },
+                  "title": "Response List Operators Api Operators Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -591,6 +652,87 @@
         ],
         "title": "LaunchHelloWorldResponse",
         "description": "Response body for POST /api/admin/runs/hello-world (HTTP 201 Created).\n\nFields:\n    dagster_run_id: The Dagster run UUID assigned by the webserver.\n        Matches design doc \u00a74.1 column name `dagster_run_id TEXT UNIQUE NOT NULL`."
+      },
+      "OperatorRead": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "category": {
+            "type": "string",
+            "title": "Category"
+          },
+          "input_kind": {
+            "type": "string",
+            "title": "Input Kind"
+          },
+          "output_kind": {
+            "type": "string",
+            "title": "Output Kind"
+          },
+          "image": {
+            "type": "string",
+            "title": "Image"
+          },
+          "config_schema": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Schema"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "version",
+          "category",
+          "input_kind",
+          "output_kind",
+          "image",
+          "config_schema",
+          "description",
+          "is_active"
+        ],
+        "title": "OperatorRead",
+        "description": "Response schema for a single operator row.\n\nUsed by GET /api/operators (F-016).\n\nFields included per agreed.md \u00a73.4:\n  - id, name, version, category \u2014 required by F-016 V2.\n  - config_schema \u2014 required by F-016 V2; nullable (Optional[dict] in ORM).\n  - input_kind, output_kind \u2014 useful to callers composing pipelines.\n  - image \u2014 operators are identified by their container image.\n  - description \u2014 human-readable label for UI display; nullable.\n  - is_active \u2014 lets clients reason about operator availability; nullable bool.\n\nFields intentionally omitted (internal/operational details deferred to later\nsprints): output_schema, default_config, reference_url, example_input,\nexample_output, entrypoint, estimated_cost_per_unit, rate_limit_per_minute,\ncreated_at."
       },
       "RunStatusResponse": {
         "properties": {

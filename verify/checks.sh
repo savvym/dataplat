@@ -961,6 +961,93 @@ print('  F014-V1 OK: total =', body['total'], 'items =', len(body['items']))
       | grep -q '^1$' \
       || { echo "FAIL: operators V3 — second seed run created a duplicate row"; exit 1; }
     echo "operators V3 idempotency: OK"
+
+    # F-016: GET /api/operators endpoint — list active operators by category.
+    FASTAPI_HOST_PORT="${FASTAPI_HOST_PORT:-18000}"
+
+    echo "--- operators F016: mint Bearer token ---"
+    OP_TOKEN_BODY=$(mktemp)
+    OP_TOKEN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/auth/token" \
+      -d "username=admin@example.com&password=testpassword123" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -w '%{http_code}' -o "$OP_TOKEN_BODY")
+    test "$OP_TOKEN_STATUS" = "200" \
+      || { echo "FAIL: operators F016 could not mint token (status $OP_TOKEN_STATUS) — run 'bash $0 auth' first"; rm -f "$OP_TOKEN_BODY"; exit 1; }
+    OP_TOKEN=$(python3 -c "import json; print(json.load(open('$OP_TOKEN_BODY'))['access_token'])")
+    rm -f "$OP_TOKEN_BODY"
+
+    echo "--- operators F016-AUTH: no token → 401 ---"
+    AUTH_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/operators")
+    test "$AUTH_STATUS" = "401" \
+      || { echo "FAIL: F016-AUTH returned $AUTH_STATUS (expected 401)"; exit 1; }
+    echo "  F016-AUTH OK: no-token → 401"
+
+    echo "--- operators F016-V1: category=extractor contains mineru ---"
+    V1_BODY=$(mktemp)
+    V1_STATUS=$(curl -sS -X GET \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/operators?category=extractor" \
+      -H "Authorization: Bearer $OP_TOKEN" \
+      -w '%{http_code}' -o "$V1_BODY")
+    test "$V1_STATUS" = "200" \
+      || { echo "FAIL: F016-V1 returned $V1_STATUS: $(cat "$V1_BODY")"; rm -f "$V1_BODY"; exit 1; }
+    python3 -c "
+import json, sys
+body = json.load(open('$V1_BODY'))
+assert isinstance(body, list), f'expected list, got {type(body).__name__}: {body}'
+names = [op.get('name') for op in body]
+assert 'mineru' in names, f'mineru not in operator names: {names}'
+print('  F016-V1 OK: array len =', len(body), 'names =', names)
+" || { echo "FAIL: F016-V1 assertion failed"; rm -f "$V1_BODY"; exit 1; }
+    rm -f "$V1_BODY"
+
+    echo "--- operators F016-V2: item shape — id, name, version, category, config_schema ---"
+    V2_BODY=$(mktemp)
+    V2_STATUS=$(curl -sS -X GET \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/operators?category=extractor" \
+      -H "Authorization: Bearer $OP_TOKEN" \
+      -w '%{http_code}' -o "$V2_BODY")
+    test "$V2_STATUS" = "200" \
+      || { echo "FAIL: F016-V2 returned $V2_STATUS: $(cat "$V2_BODY")"; rm -f "$V2_BODY"; exit 1; }
+    python3 -c "
+import json, sys
+body = json.load(open('$V2_BODY'))
+assert isinstance(body, list) and len(body) > 0, f'expected non-empty list: {body}'
+required = ['id', 'name', 'version', 'category', 'config_schema']
+for op in body:
+    for field in required:
+        assert field in op, f'item missing field {field!r}: {op}'
+    assert isinstance(op['id'], int), f'id not int: {op}'
+    assert op['category'] == 'extractor', f'category mismatch: {op}'
+mineru = next((op for op in body if op['name'] == 'mineru'), None)
+assert mineru is not None, f'mineru not found in {body}'
+assert mineru['version'] == '0.1.0', f'version wrong: {mineru}'
+assert isinstance(mineru['config_schema'], dict), f'config_schema not dict: {mineru}'
+print('  F016-V2 OK: all items have required fields; mineru v0.1.0 config_schema is dict')
+" || { echo "FAIL: F016-V2 shape assertion failed"; rm -f "$V2_BODY"; exit 1; }
+    rm -f "$V2_BODY"
+
+    echo "--- operators F016-V3: category=tagger returns 200 + array (empty ok) ---"
+    # No tagger operator is seeded; the array will be empty. The check asserts
+    # HTTP 200 + a JSON array where every item (vacuously) has category='tagger'.
+    V3_BODY=$(mktemp)
+    V3_STATUS=$(curl -sS -X GET \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/operators?category=tagger" \
+      -H "Authorization: Bearer $OP_TOKEN" \
+      -w '%{http_code}' -o "$V3_BODY")
+    test "$V3_STATUS" = "200" \
+      || { echo "FAIL: F016-V3 returned $V3_STATUS: $(cat "$V3_BODY")"; rm -f "$V3_BODY"; exit 1; }
+    python3 -c "
+import json, sys
+body = json.load(open('$V3_BODY'))
+assert isinstance(body, list), f'expected list, got {type(body).__name__}: {body}'
+for op in body:
+    assert op.get('category') == 'tagger', f'item category != tagger: {op}'
+print('  F016-V3 OK: category=tagger -> 200 + list of len', len(body),
+      '(empty is expected — no tagger seeded yet)')
+" || { echo "FAIL: F016-V3 assertion failed"; rm -f "$V3_BODY"; exit 1; }
+    rm -f "$V3_BODY"
     ;;
   all)
     # smoke first: cheapest check, fails fast if stack is not up at all.
