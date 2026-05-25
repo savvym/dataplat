@@ -823,6 +823,92 @@ print('  F013-V1 OK: all required fields present, id=%d' % body['id'])
       || { echo "FAIL: F013-V2 returned $NOTFOUND_STATUS (expected 404)"; rm -f "$PDF_FILE" /tmp/src_expected_sha256.txt; exit 1; }
     echo "  F013-V2 OK: /api/sources/99999 -> 404"
 
+    echo "--- sources F014-V1: create collection and upload 3 sources to it ---"
+    # Create a collection dedicated to F-014 tests (idempotent across reruns).
+    F014_COLL_BODY=$(mktemp)
+    F014_COLL_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/collections" \
+      -H "Authorization: Bearer $SRC_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"name": "f014-test-collection"}' \
+      -w '%{http_code}' -o "$F014_COLL_BODY")
+    # Accept 201 (created) or 409 (already exists from a previous run).
+    [[ "$F014_COLL_STATUS" == "201" || "$F014_COLL_STATUS" == "409" ]] \
+      || { echo "FAIL: F014-V1 collection create returned $F014_COLL_STATUS: $(cat "$F014_COLL_BODY")"; rm -f "$F014_COLL_BODY" "$PDF_FILE" /tmp/src_expected_sha256.txt; exit 1; }
+    if [[ "$F014_COLL_STATUS" == "201" ]]; then
+      F014_COLL_ID=$(python3 -c "import json; print(json.load(open('$F014_COLL_BODY'))['id'])")
+    else
+      F014_COLL_ID=$(docker compose -f "$COMPOSE" exec -T postgres \
+        psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+          "SELECT id FROM source_collection WHERE name='f014-test-collection'" \
+        | tr -d '[:space:]')
+    fi
+    rm -f "$F014_COLL_BODY"
+    echo "  F014 collection id=$F014_COLL_ID"
+
+    # Upload 3 minimal PDFs to the collection (idempotent — duplicates are OK;
+    # sha256 uniqueness is per-collection not enforced at DB level).
+    for i in 1 2 3; do
+      F014_PDF=$(mktemp /tmp/f014-XXXXXX.pdf)
+      python3 -c "
+pdf = (b'%PDF-1.4\n1 0 obj<</Type /Catalog /Pages 2 0 R>>endobj\n'
+       b'2 0 obj<</Type /Pages /Kids[3 0 R] /Count 1>>endobj\n'
+       b'3 0 obj<</Type /Page /MediaBox[0 0 612 792] /Parent 2 0 R>>endobj\n'
+       b'xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n'
+       b'0000000058 00000 n \n0000000115 00000 n \n'
+       b'trailer<</Size 4 /Root 1 0 R>>\nstartxref\n182\n%%EOF\n')
+# Add a unique byte so each PDF has a distinct sha256.
+pdf = pdf + b' ' * $i
+open('$F014_PDF', 'wb').write(pdf)
+"
+      F014_UP_BODY=$(mktemp)
+      F014_UP_STATUS=$(curl -sS -X POST \
+        "http://localhost:${FASTAPI_HOST_PORT}/api/sources/upload" \
+        -H "Authorization: Bearer $SRC_TOKEN" \
+        -F "file=@${F014_PDF};type=application/pdf" \
+        -F "collection_id=${F014_COLL_ID}" \
+        -w '%{http_code}' -o "$F014_UP_BODY")
+      rm -f "$F014_PDF"
+      test "$F014_UP_STATUS" = "201" \
+        || { echo "FAIL: F014-V1 upload $i returned $F014_UP_STATUS: $(cat "$F014_UP_BODY")"; rm -f "$F014_UP_BODY" "$PDF_FILE" /tmp/src_expected_sha256.txt; exit 1; }
+      F014_SRC_ID=$(python3 -c "import json; print(json.load(open('$F014_UP_BODY'))['id'])")
+      rm -f "$F014_UP_BODY"
+      echo "  uploaded source $i: id=$F014_SRC_ID"
+    done
+
+    echo "--- sources F014-V1: GET /api/sources/collections/{id}/sources returns 200, total>=3 ---"
+    F014_LIST_BODY=$(mktemp)
+    F014_LIST_STATUS=$(curl -sS -X GET \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/collections/${F014_COLL_ID}/sources" \
+      -H "Authorization: Bearer $SRC_TOKEN" \
+      -w '%{http_code}' -o "$F014_LIST_BODY")
+    test "$F014_LIST_STATUS" = "200" \
+      || { echo "FAIL: F014-V1 GET returned $F014_LIST_STATUS: $(cat "$F014_LIST_BODY")"; rm -f "$F014_LIST_BODY" "$PDF_FILE" /tmp/src_expected_sha256.txt; exit 1; }
+    python3 -c "
+import json, sys
+body = json.load(open('$F014_LIST_BODY'))
+assert 'items' in body, f'missing items key: {body}'
+assert 'total' in body, f'missing total key: {body}'
+assert isinstance(body['total'], int), f'total not int: {body}'
+assert body['total'] >= 3, f'expected total >= 3, got {body[\"total\"]}'
+assert len(body['items']) >= 3, f'expected >= 3 items, got {len(body[\"items\"])}'
+required = ['id', 'original_name', 'storage_uri', 'sha256', 'uploaded_at']
+for item in body['items']:
+    for field in required:
+        assert field in item, f'item missing field {field}: {item}'
+print('  F014-V1 OK: total =', body['total'], 'items =', len(body['items']))
+" || { echo "FAIL: F014-V1 response shape incorrect"; rm -f "$F014_LIST_BODY" "$PDF_FILE" /tmp/src_expected_sha256.txt; exit 1; }
+    rm -f "$F014_LIST_BODY"
+
+    echo "--- sources F014-V2: GET on non-existent collection returns 404 ---"
+    F014_NOTFOUND_STATUS=$(curl -sS -X GET \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/collections/999999/sources" \
+      -H "Authorization: Bearer $SRC_TOKEN" \
+      -o /dev/null -w '%{http_code}')
+    test "$F014_NOTFOUND_STATUS" = "404" \
+      || { echo "FAIL: F014-V2 returned $F014_NOTFOUND_STATUS (expected 404)"; rm -f "$PDF_FILE" /tmp/src_expected_sha256.txt; exit 1; }
+    echo "  F014-V2 OK: /api/sources/collections/999999/sources -> 404"
+
     rm -f "$PDF_FILE" /tmp/src_expected_sha256.txt
     ;;
   all)

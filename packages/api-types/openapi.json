@@ -278,6 +278,77 @@
         }
       }
     },
+    "/api/sources/collections/{id}/sources": {
+      "get": {
+        "tags": [
+          "sources"
+        ],
+        "summary": "List Sources in Collection",
+        "description": "Return a paginated list of sources belonging to the specified collection.\n\nOwner-scoping (F-014 agreed.md \u00a73.5):\n  Step 1 \u2014 Verify the collection exists AND is owned by the caller.\n           If it does not exist or belongs to another user \u2192 404.\n           Returning 404 (not 403) for both cases prevents enumeration leaks.\n  Step 2 \u2014 List sources in that collection (paginated page + total count).\n\nThe ownership check is a dedicated query that short-circuits to 404 before\nthe paginated source queries are issued.  Embedding ownership as a JOIN on\nthe source queries would silently return {\"items\":[], \"total\":0} (HTTP 200)\nfor an unowned collection \u2014 violating the no-enumeration-leak invariant.\n\nPagination:\n  limit  \u2014 max items per page (1\u2013200, default 20)\n  offset \u2014 number of rows to skip (default 0)\ntotal    \u2014 count of ALL sources in the collection (not just the current page)\nOrdering: Source.id ASC (oldest first, stable).\n\nAuth required (F-008).",
+        "operationId": "list_sources_by_collection_api_sources_collections__id__sources_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/sources/upload": {
       "post": {
         "tags": [
@@ -640,6 +711,28 @@
         ],
         "title": "SourceCollectionOut",
         "description": "Response schema for a single source_collection row.\n\nUsed by POST /api/sources/collections (F-009) and by\nGET /api/sources/collections list items (F-010)."
+      },
+      "SourceListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SourceRead"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "SourceListResponse",
+        "description": "Response for GET /api/sources/collections/{id}/sources (F-014).\n\nPaginated list of source records belonging to a single collection.\nMirrors CollectionListResponse shape from F-010:\n  items \u2014 the current page of SourceRead records (ordered by id ASC)\n  total \u2014 count of ALL sources in the collection (not just the page)"
       },
       "SourceRead": {
         "properties": {

@@ -1,10 +1,12 @@
-"""Source schemas — S011-F-011 / S013-F-013.
+"""Source schemas — S011-F-011 / S013-F-013 / S014-F-014.
 
 Schemas:
   - SourceUploadResponse: response for POST /api/sources/upload (F-011).
       Contains only id and storage_uri per agreed.md §3-D8 (minimal response).
   - SourceRead: response for GET /api/sources/{id} (F-013).
       Full source record with all 10 fields.
+  - SourceListResponse: response for GET /api/sources/collections/{id}/sources (F-014).
+      Paginated list of SourceRead items with total count.
 """
 
 from __future__ import annotations
@@ -47,3 +49,16 @@ class SourceRead(BaseModel):
     uploaded_at: datetime | None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class SourceListResponse(BaseModel):
+    """Response for GET /api/sources/collections/{id}/sources (F-014).
+
+    Paginated list of source records belonging to a single collection.
+    Mirrors CollectionListResponse shape from F-010:
+      items — the current page of SourceRead records (ordered by id ASC)
+      total — count of ALL sources in the collection (not just the page)
+    """
+
+    items: list[SourceRead]
+    total: int

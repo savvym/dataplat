@@ -1,17 +1,22 @@
 """Sources router — S008-F-008 stub + S009-F-009 POST + S010-F-010 GET list
-+ S011-F-011 POST /upload + S012-F-012 Dagster notify + S013-F-013 GET /{id}.
++ S011-F-011 POST /upload + S012-F-012 Dagster notify + S013-F-013 GET /{id}
++ S014-F-014 GET /collections/{id}/sources.
 
 Provides:
-  GET  /api/sources/collections — paginated list of caller's collections (F-010).
-  POST /api/sources/collections — create a source_collection row (F-009).
-  POST /api/sources/upload      — upload a PDF source file (F-011).
-  GET  /api/sources/{id}        — full source detail record (F-013).
+  GET  /api/sources/collections                    — paginated list of caller's collections (F-010).
+  POST /api/sources/collections                    — create a source_collection row (F-009).
+  GET  /api/sources/collections/{id}/sources       — paginated list of sources in a collection (F-014).
+  POST /api/sources/upload                         — upload a PDF source file (F-011).
+  GET  /api/sources/{id}                           — full source detail record (F-013).
 
 Auth enforcement (Depends(get_current_user)) is the F-008 deliverable and
 MUST NOT be removed from any handler.
 
-Route-ordering note (F-013): GET /{id} is registered LAST so that the fixed
-paths /collections and /upload are matched first by FastAPI's router.
+Route-ordering note (F-013/F-014): GET /{id} is registered LAST so that the
+fixed-prefix paths /collections and /upload are matched first by FastAPI's
+router.  GET /collections/{id}/sources (3 segments) cannot collide with GET
+/{id} (1 segment) but must still be registered before the catch-all to keep
+the ordering invariant clear and maintainable.
 """
 
 from __future__ import annotations
@@ -37,7 +42,7 @@ from dataplat_api.schemas.collections import (
     SourceCollectionCreate,
     SourceCollectionOut,
 )
-from dataplat_api.schemas.sources import SourceRead, SourceUploadResponse
+from dataplat_api.schemas.sources import SourceListResponse, SourceRead, SourceUploadResponse
 from dataplat_api.storage.s3 import get_s3_client
 
 logger = logging.getLogger(__name__)
@@ -126,6 +131,74 @@ async def create_collection(
         raise
 
     return SourceCollectionOut.model_validate(collection)
+
+
+@router.get(
+    "/collections/{id}/sources",
+    response_model=SourceListResponse,
+    summary="List Sources in Collection",
+)
+async def list_sources_by_collection(
+    id: int,
+    limit: int = Query(default=20, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> SourceListResponse:
+    """Return a paginated list of sources belonging to the specified collection.
+
+    Owner-scoping (F-014 agreed.md §3.5):
+      Step 1 — Verify the collection exists AND is owned by the caller.
+               If it does not exist or belongs to another user → 404.
+               Returning 404 (not 403) for both cases prevents enumeration leaks.
+      Step 2 — List sources in that collection (paginated page + total count).
+
+    The ownership check is a dedicated query that short-circuits to 404 before
+    the paginated source queries are issued.  Embedding ownership as a JOIN on
+    the source queries would silently return {"items":[], "total":0} (HTTP 200)
+    for an unowned collection — violating the no-enumeration-leak invariant.
+
+    Pagination:
+      limit  — max items per page (1–200, default 20)
+      offset — number of rows to skip (default 0)
+    total    — count of ALL sources in the collection (not just the current page)
+    Ordering: Source.id ASC (oldest first, stable).
+
+    Auth required (F-008).
+    """
+    # Query 1: verify collection exists and is owned by the caller.
+    coll_result = await session.execute(
+        select(SourceCollection)
+        .where(SourceCollection.id == id)
+        .where(SourceCollection.owner_id == current_user.id)
+    )
+    collection = coll_result.scalar_one_or_none()
+    if collection is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Collection not found",
+        )
+
+    # Query 2: paginated source page, collection-scoped, ordered by id ASC.
+    result = await session.execute(
+        select(Source)
+        .where(Source.collection_id == id)
+        .order_by(Source.id.asc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = result.scalars().all()
+
+    # Query 3: total count over ALL sources in this collection (no limit/offset).
+    count_result = await session.execute(
+        select(func.count())
+        .select_from(Source)
+        .where(Source.collection_id == id)
+    )
+    total = count_result.scalar_one()
+
+    items = [SourceRead.model_validate(row) for row in rows]
+    return SourceListResponse(items=items, total=total)
 
 
 @router.post(
