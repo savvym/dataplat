@@ -1227,6 +1227,193 @@ print('  F017-V1 OK: id=%d name=%s config_schema.type=%s output_schema=%s defaul
     bash "$0" dagster
     bash "$0" runs
     bash "$0" operators   # F-015
+    bash "$0" extract     # F-019
+    ;;
+  extract)
+    # F-019: extract_mineru asset — PDF→DoclingDocument + document_variant row.
+    # Requires: dagster image rebuilt with boto3/docling-core/pytest, and
+    # MINIO_*/PLATFORM_DB_URL env injected into dagster-webserver/dagster-daemon.
+    COMPOSE="docker/docker-compose.dev.yml"
+    [[ -f "$COMPOSE" ]] || { echo "no $COMPOSE yet"; exit 0; }
+
+    FASTAPI_HOST_PORT="${FASTAPI_HOST_PORT:-18000}"
+    # Mirror buckets) block exactly — block-local vars under set -euo pipefail.
+    MINIO_USER="${MINIO_ROOT_USER:-minioadmin}"
+    MINIO_PASS="${MINIO_ROOT_PASSWORD:-devpassword}"
+
+    echo "--- extract: unit tests for extractor.py helpers (inside dagster-webserver) ---"
+    # docling-core is only in the Dagster image, not in the apps/api venv.
+    # The bind-mount makes /app/dagster/tests/test_extractor.py available without rebuild.
+    docker compose -f "$COMPOSE" exec -T dagster-webserver \
+      python -m pytest /app/dagster/tests/test_extractor.py -q \
+      || { echo "FAIL: extractor unit tests failed"; exit 1; }
+    echo "  extractor unit tests: OK"
+
+    echo "--- extract: mint Bearer token ---"
+    EX_TOKEN_BODY=$(mktemp)
+    EX_TOKEN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/auth/token" \
+      -d "username=admin@example.com&password=testpassword123" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -w '%{http_code}' -o "$EX_TOKEN_BODY")
+    test "$EX_TOKEN_STATUS" = "200" \
+      || { echo "FAIL: extract) could not mint token (status $EX_TOKEN_STATUS) — run 'bash $0 auth' first"; rm -f "$EX_TOKEN_BODY"; exit 1; }
+    EX_TOKEN=$(python3 -c "import json; print(json.load(open('$EX_TOKEN_BODY'))['access_token'])")
+    rm -f "$EX_TOKEN_BODY"
+
+    echo "--- extract: upload source PDF ---"
+    EX_PDF=$(mktemp /tmp/f019-XXXXXX.pdf)
+    python3 -c "
+pdf = (b'%PDF-1.4\n1 0 obj<</Type /Catalog /Pages 2 0 R>>endobj\n'
+       b'2 0 obj<</Type /Pages /Kids[3 0 R] /Count 1>>endobj\n'
+       b'3 0 obj<</Type /Page /MediaBox[0 0 612 792] /Parent 2 0 R>>endobj\n'
+       b'xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n'
+       b'0000000058 00000 n \n0000000115 00000 n \n'
+       b'trailer<</Size 4 /Root 1 0 R>>\nstartxref\n182\n%%EOF\n')
+open('$EX_PDF', 'wb').write(pdf)
+"
+    EX_UP_BODY=$(mktemp)
+    EX_UP_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/upload" \
+      -H "Authorization: Bearer $EX_TOKEN" \
+      -F "file=@${EX_PDF};type=application/pdf" \
+      -w '%{http_code}' -o "$EX_UP_BODY")
+    rm -f "$EX_PDF"
+    test "$EX_UP_STATUS" = "201" \
+      || { echo "FAIL: extract) upload returned $EX_UP_STATUS: $(cat "$EX_UP_BODY")"; rm -f "$EX_UP_BODY"; exit 1; }
+    EX_SRC_ID=$(python3 -c "import json; print(json.load(open('$EX_UP_BODY'))['id'])")
+    rm -f "$EX_UP_BODY"
+    echo "  uploaded source id=$EX_SRC_ID"
+
+    echo "--- extract: POST /api/runs extract_mineru ---"
+    EX_RUN_BODY=$(mktemp)
+    EX_RUN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $EX_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"extract_mineru\", \"source_ids\": [${EX_SRC_ID}]}" \
+      -w '%{http_code}' -o "$EX_RUN_BODY")
+    test "$EX_RUN_STATUS" = "202" \
+      || { echo "FAIL: extract) POST /api/runs returned $EX_RUN_STATUS: $(cat "$EX_RUN_BODY")"; rm -f "$EX_RUN_BODY"; exit 1; }
+    EX_BACKFILL_ID=$(python3 -c "import json; print(json.load(open('$EX_RUN_BODY'))['dagster_run_id'])")
+    rm -f "$EX_RUN_BODY"
+    echo "  backfill launched: id=$EX_BACKFILL_ID"
+
+    echo "--- extract: poll backfill to COMPLETED_SUCCESS (≤120s) ---"
+    EX_BF_STATUS="UNKNOWN"
+    for i in $(seq 1 40); do
+      EX_BF_STATUS=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+        python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill { status }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$EX_BACKFILL_ID'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+print(result.get('status', result.get('message', 'UNKNOWN')))
+" 2>&1 | tail -1)
+      echo "  [$i/40] backfill status: $EX_BF_STATUS"
+      case "$EX_BF_STATUS" in
+        COMPLETED_SUCCESS) break ;;
+        COMPLETED_FAILED|CANCELED|*FAIL*)
+          echo "FAIL: backfill reached terminal non-success state: $EX_BF_STATUS"; exit 1 ;;
+      esac
+      sleep 3
+    done
+    test "$EX_BF_STATUS" = "COMPLETED_SUCCESS" \
+      || { echo "FAIL: timeout waiting for backfill COMPLETED_SUCCESS (last status=$EX_BF_STATUS)"; exit 1; }
+    echo "  backfill COMPLETED_SUCCESS"
+
+    echo "--- extract: assert per-partition run reached SUCCESS ---"
+    EX_RUN_CHECK=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+      python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query {
+        runsOrError(filter: {tags: [{key: \"dagster/backfill\", value: \"$EX_BACKFILL_ID\"}]}) {
+            __typename
+            ... on Runs { results { runId status } }
+            ... on PythonError { message }
+        }
+    }'''
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+runs = data['data']['runsOrError'].get('results', [])
+success = [r for r in runs if r['status'] == 'SUCCESS']
+if not success:
+    print('FAIL: no per-partition run with status=SUCCESS. runs=%s' % runs, file=sys.stderr)
+    sys.exit(1)
+print('  per-partition run SUCCESS: runId=%s' % success[0]['runId'])
+" 2>&1)
+    echo "$EX_RUN_CHECK" | grep -q "FAIL" \
+      && { echo "$EX_RUN_CHECK"; exit 1; } || echo "$EX_RUN_CHECK"
+
+    echo "--- extract V1-proxy: document_variant row in Postgres ---"
+    # Criterion 1 proxy: literal GET /api/sources/{id}/documents deferred to F-020.
+    docker compose -f "$COMPOSE" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "SELECT extractor_name || '|' || extractor_version
+         FROM document_variant WHERE source_id=${EX_SRC_ID} AND extractor_name='mineru'" \
+      | grep -q '^mineru|0\.1\.0$' \
+      || { echo "FAIL: V1-proxy — document_variant row missing or extractor_name/version wrong"; exit 1; }
+    echo "  V1-proxy OK: document_variant row exists (extractor_name=mineru, version=0.1.0)"
+    echo "  NOTE: literal GET /api/sources/${EX_SRC_ID}/documents check deferred to F-020"
+
+    echo "--- extract V2: MinIO doc.docling.json exists + valid JSON + schema_name ---"
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${EX_SRC_ID}" \
+      fastapi python -c "
+import boto3, os, json, sys
+s3 = boto3.client('s3', endpoint_url='http://minio:9000',
+    aws_access_key_id=os.environ['S3_USER'],
+    aws_secret_access_key=os.environ['S3_PASS'])
+src_id = os.environ['SRC_ID']
+key = f'{src_id}/extract_mineru/doc.docling.json'
+try:
+    resp = s3.get_object(Bucket='documents', Key=key)
+    body = resp['Body'].read()
+    data = json.loads(body)
+    assert data.get('schema_name') == 'DoclingDocument', \
+        f'schema_name wrong: {data.get(\"schema_name\")}'
+    print(f'  V2 OK: doc.docling.json exists at {key}, {len(body)} bytes, schema_name=DoclingDocument')
+except Exception as e:
+    print(f'FAIL: V2 — {e}', file=sys.stderr)
+    sys.exit(1)
+" || { echo "FAIL: V2 check failed"; exit 1; }
+
+    echo "--- extract V3: is_canonical = TRUE ---"
+    docker compose -f "$COMPOSE" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "SELECT is_canonical FROM document_variant
+         WHERE source_id=${EX_SRC_ID} AND extractor_name='mineru'" \
+      | grep -q '^t$' \
+      || { echo "FAIL: V3 — is_canonical is not TRUE"; exit 1; }
+    echo "  V3 OK: is_canonical=TRUE"
+
+    echo "--- extract V4: dagster_run_id NOT NULL ---"
+    # dagster_run_id is a UUID (e.g. 0a0ee6b7-1212-42bb-a0c7-37c70a7610d1)
+    docker compose -f "$COMPOSE" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "SELECT dagster_run_id FROM document_variant
+         WHERE source_id=${EX_SRC_ID} AND extractor_name='mineru'" \
+      | grep -qE '^[0-9a-f-]{30,}$' \
+      || { echo "FAIL: V4 — dagster_run_id is NULL or not a UUID"; exit 1; }
+    echo "  V4 OK: dagster_run_id is non-null UUID"
     ;;
   *)
     echo "Unknown layer: $LAYER" >&2

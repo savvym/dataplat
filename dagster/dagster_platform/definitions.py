@@ -4,6 +4,9 @@
 # F-012: sources_partitions + source_asset — external asset for uploaded sources,
 #        partitioned by DynamicPartitionsDefinition("sources"). FastAPI notifies
 #        Dagster after each upload via addDynamicPartition + reportRunlessAssetEvents.
+# F-019: extract_mineru — real asset body: reads PDF from MinIO, produces a minimal
+#        valid DoclingDocument JSON, writes it back to MinIO, writes a document_variant
+#        row to Postgres. Uses helpers from extractor.py.
 
 from dagster import (
     AssetExecutionContext,
@@ -11,9 +14,19 @@ from dagster import (
     Definitions,
     DynamicPartitionsDefinition,
     MaterializeResult,
+    MetadataValue,
     asset,
     job,
     op,
+)
+
+from dagster_platform.extractor import (
+    build_docling_document,
+    build_s3_client,
+    estimate_page_count,
+    insert_document_variant,
+    read_pdf_bytes,
+    write_document_json,
 )
 
 # F-012: Dynamic partition definition for source uploads.
@@ -30,17 +43,71 @@ source_asset = AssetSpec(key="source", partitions_def=sources_partitions)
 
 @asset(
     partitions_def=sources_partitions,
-    description="MinerU extraction stub — F-018 trigger wiring. Real extraction logic: F-019.",
+    description=(
+        "MinerU extraction (F-019): reads PDF from MinIO, produces a minimal "
+        "schema-valid DoclingDocument JSON, writes to s3://documents/{source_id}/"
+        "extract_mineru/doc.docling.json, and inserts a document_variant row to Postgres."
+    ),
 )
 def extract_mineru(context: AssetExecutionContext) -> MaterializeResult:
-    """Stub asset: logs the partition key and yields a trivial result.
+    """Real extraction asset (F-019).
 
-    F-018 scope: wiring only. The real MinerU PDF→document extraction body
-    is F-019. Do NOT add extraction logic here.
+    Steps (agreed.md §3):
+      1. Parse source_id from partition key.
+      2. Build boto3 S3 client from MINIO_* env.
+      3. Read PDF bytes from s3://sources/{source_id}/original.pdf.
+      4. Estimate page count (best-effort regex; 0 on failure).
+      5. Build minimal valid DoclingDocument JSON (no DocumentOrigin/binary_hash).
+      6. Write JSON to s3://documents/{source_id}/extract_mineru/doc.docling.json.
+      7. Insert document_variant row (psycopg2, PLATFORM_DB_URL, ON CONFLICT DO NOTHING).
+      8. Return MaterializeResult with metadata.
     """
     partition_key = context.partition_key
-    context.log.info("extract_mineru stub: partition_key=%s", partition_key)
-    return MaterializeResult()
+    source_id = int(partition_key.removeprefix("src_"))
+    context.log.info(
+        "extract_mineru: starting for partition_key=%s source_id=%d",
+        partition_key,
+        source_id,
+    )
+
+    s3 = build_s3_client()
+
+    pdf_bytes = read_pdf_bytes(s3, source_id)
+    context.log.info(
+        "extract_mineru: read %d bytes from sources/%d/original.pdf",
+        len(pdf_bytes),
+        source_id,
+    )
+
+    page_count = estimate_page_count(pdf_bytes)
+    context.log.info("extract_mineru: estimated page_count=%d", page_count)
+
+    doc_json = build_docling_document(source_id, pdf_bytes, page_count)
+    context.log.info(
+        "extract_mineru: built DoclingDocument JSON (%d bytes)", len(doc_json)
+    )
+
+    write_document_json(s3, source_id, doc_json)
+    context.log.info(
+        "extract_mineru: wrote doc.docling.json to documents/%d/extract_mineru/",
+        source_id,
+    )
+
+    insert_document_variant(source_id, page_count, context.run_id)
+    context.log.info(
+        "extract_mineru: inserted document_variant row (run_id=%s)", context.run_id
+    )
+
+    return MaterializeResult(
+        metadata={
+            "source_id": MetadataValue.int(source_id),
+            "page_count": MetadataValue.int(page_count),
+            "bytes": MetadataValue.int(len(pdf_bytes)),
+            "storage_key": MetadataValue.text(
+                f"documents/{source_id}/extract_mineru/doc.docling.json"
+            ),
+        }
+    )
 
 
 @op

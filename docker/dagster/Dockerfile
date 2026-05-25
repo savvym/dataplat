@@ -21,11 +21,17 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # Install Dagster and its Postgres storage backend (pinned per agreed.md §8a)
+# F-019: boto3 (S3/MinIO client), docling-core (DoclingDocument type for minimal-valid
+# extraction output), pytest (needed to run dagster/tests/ unit tests inside the container
+# via `python -m pytest` in the checks.sh extract) layer — not otherwise in this image).
 RUN pip install --no-cache-dir \
     dagster==1.11.16 \
     dagster-webserver==1.11.16 \
     dagster-postgres==0.27.16 \
-    psycopg2-binary==2.9.10
+    psycopg2-binary==2.9.10 \
+    boto3==1.37.38 \
+    docling-core==2.77.0 \
+    pytest==8.3.4
 
 # Copy the entire dagster/ directory from the repo root into the image.
 # After this COPY:

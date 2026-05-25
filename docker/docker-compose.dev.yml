@@ -127,6 +127,13 @@ services:
       POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
       POSTGRES_DB_DAGSTER: ${POSTGRES_DB_DAGSTER:-platform_dagster}
+      # F-019: MinIO + platform-DB access for the extract_mineru asset.
+      # MINIO_ENDPOINT is not in .env.example; set inline consistent with fastapi service.
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-devpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-platform}
+      PLATFORM_DB_URL: postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-devpassword}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-platform}
     command: dagster-webserver -h 0.0.0.0 -p 3000 -w /app/dagster/workspace.yaml
     volumes:
       - ../dagster:/app/dagster
@@ -156,6 +163,12 @@ services:
       POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
       POSTGRES_DB_DAGSTER: ${POSTGRES_DB_DAGSTER:-platform_dagster}
+      # F-019: MinIO + platform-DB access for the extract_mineru asset.
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-devpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-platform}
+      PLATFORM_DB_URL: postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-devpassword}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-platform}
     command: dagster-daemon run -w /app/dagster/workspace.yaml
     volumes:
       - ../dagster:/app/dagster
