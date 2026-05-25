@@ -122,7 +122,7 @@ done
 
 ## 当前进度（Phase 0–1）
 
-11/105 features 通过：
+12/105 features 通过：
 
 - **F-001** docker-compose 开发栈
 - **F-002** Postgres 基线迁移（8 张 §4.1 业务表）
@@ -135,8 +135,9 @@ done
 - **F-009** `POST /api/sources/collections` 创建 source collection（`SourceCollectionCreate`/`SourceCollectionOut` 模型；`owner_id = current_user.id`；UNIQUE 违例按精确约束名 `source_collection_name_key` 捕获 → 409；async session.add + commit + refresh；checks.sh 新增 `collections)` 层 V1/V2/V3 + `all)` 链插入到 `auth` 与 `buckets` 之间）
 - **F-010** `GET /api/sources/collections` 分页列出当前用户的 source collections（`limit`/`offset` Query 参数，默认 20，`ge=1,le=200` / `ge=0`；两条 async 查询:owner 过滤的分页 SELECT + 独立 COUNT，`total` 为全量计数而非页大小；`ORDER BY id ASC`；`CollectionListResponse.items` 由 `list[Any]` 收窄为 `list[SourceCollectionOut]`；checks.sh `collections)` 层新增 LIST-V1/LIST-V2）
 - **F-011** `POST /api/sources/upload` 上传 PDF：存入 MinIO `s3://sources/{id}/original.pdf`，写 source 行（`sha256` / `storage_uri` / `kind='file'` / `mime_type='application/pdf'`），返回 `{id, storage_uri}`；首个 app 内 S3 客户端 `storage/s3.py`（`get_s3_client` aioboto3 依赖，可在测试中 override）；flush-then-set 顺序（flush 取 id → 设 `storage_uri`/`dagster_partition_key=src_{id}`，临时键用 `uuid4().hex` → S3 上传 → commit；上传失败则事务隐式回滚不留孤儿行）；非 PDF → 415；checks.sh 新增 `sources)` 层 UPLOAD-V1..V4，`all)` 链插入到 `collections` 与 `buckets` 之间
+- **F-012** 上传成功后 FastAPI 通知 Dagster（best-effort，commit 之后）：`add_source_partition` 向 `"sources"` `DynamicPartitionsDefinition` 注册 `src_{source_id}`，`report_source_materialization` 为外部资产 `source` 上报一次 `reportRunlessAssetEvents` 物化事件；两次调用各自 try/except，失败仅记 WARNING 仍返回 201（上传已落库不受 Dagster 可用性影响）。新增 `dagster/dagster_platform/definitions.py` 的 `DynamicPartitionsDefinition("sources")` + `AssetSpec(key="source")`；gateway 新增两个 mutation 方法（沿用 launch_hello_world 错误处理，复用 repositorySelector 常量；`DuplicateDynamicPartitionError` 幂等忽略）；`docker-compose.dev.yml` 为全部 4 个 dagster 服务加 `../dagster:/app/dagster` bind mount（改代码后 restart 即生效，无需 rebuild），并新增 `dagster/.gitignore` 屏蔽运行时目录；checks.sh `dagster)` 层新增 F012-V1（partition 出现）+ F012-V2（物化事件）。注：Dagster 1.11.16 实际 mutation 为 `addDynamicPartition`（单数，需 repositorySelector）+ `reportRunlessAssetEvents`（非设计稿的 reportRuntimeAssetMaterialization）。
 
-下一批候选：F-012（上传后 Dagster 通知，依赖 F-011 已就绪）/ F-013（source 详情）/ F-014（列出 collection 内 sources）。
+下一批候选：F-013（source 详情 GET /api/sources/{id}）/ F-014（列出 collection 内 sources）/ F-015（MinerU operator 注册种子）。
 
 ---
 
