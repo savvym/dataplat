@@ -122,7 +122,7 @@ done
 
 ## 当前进度（Phase 0–1）
 
-9/105 features 通过：
+10/105 features 通过：
 
 - **F-001** docker-compose 开发栈
 - **F-002** Postgres 基线迁移（8 张 §4.1 业务表）
@@ -133,8 +133,9 @@ done
 - **F-007** 一次性 `seed-admin` CLI 写入 admin 用户 + `POST /api/auth/token` 颁发 JWT（bcrypt + PyJWT HS256，常量时间防枚举）
 - **F-008** 所有非公开路由（admin / runs / sources）强制 `Bearer` JWT；`get_current_user` 依赖 + `OAuth2PasswordBearer(auto_error=True)` + 常量 `Could not validate credentials` 文案；新增 stub `GET /api/sources/collections`（body 留给 F-010）
 - **F-009** `POST /api/sources/collections` 创建 source collection（`SourceCollectionCreate`/`SourceCollectionOut` 模型；`owner_id = current_user.id`；UNIQUE 违例按精确约束名 `source_collection_name_key` 捕获 → 409；async session.add + commit + refresh；checks.sh 新增 `collections)` 层 V1/V2/V3 + `all)` 链插入到 `auth` 与 `buckets` 之间）
+- **F-010** `GET /api/sources/collections` 分页列出当前用户的 source collections（`limit`/`offset` Query 参数，默认 20，`ge=1,le=200` / `ge=0`；两条 async 查询:owner 过滤的分页 SELECT + 独立 COUNT，`total` 为全量计数而非页大小；`ORDER BY id ASC`；`CollectionListResponse.items` 由 `list[Any]` 收窄为 `list[SourceCollectionOut]`；checks.sh `collections)` 层新增 LIST-V1/LIST-V2）
 
-下一批候选：F-010（列出 source collections）/ F-011（PDF 上传）/ F-012（上传后 Dagster 通知）。
+下一批候选：F-011（PDF 上传）/ F-012（上传后 Dagster 通知）/ F-013（source 详情）。
 
 ---
 
