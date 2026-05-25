@@ -122,7 +122,7 @@ done
 
 ## 当前进度（Phase 0–1）
 
-15/105 features 通过：
+16/105 features 通过：
 
 - **F-001** docker-compose 开发栈
 - **F-002** Postgres 基线迁移（8 张 §4.1 业务表）
@@ -140,8 +140,9 @@ done
 - **F-013** `GET /api/sources/{id}` 返回 source 完整记录（`SourceRead` 模型，10 字段含 `storage_uri`/`sha256`/`size`/`mime_type`/`collection_id`，`from_attributes=True`）；async `SELECT ... LEFT JOIN source_collection ... WHERE id=:id AND (collection.owner_id=:uid OR collection_id IS NULL)` + `scalar_one_or_none()`，缺失或越权一律 404（不泄露存在性，沿用 F-010 owner-scoping）；新路由追加在固定路径之后，不遮蔽 `/collections`；source 表无 `owner_id`，未归集 source 对所有已认证用户可见（严格归属需迁移，推迟）；checks.sh `sources)` 层新增 F013-V1（200 + 全字段）/ F013-V2（99999 → 404）。
 - **F-014** `GET /api/sources/collections/{id}/sources` 分页列出某 collection 内的 sources（新增 `SourceListResponse {items: list[SourceRead], total: int}`，复用 F-013 的 `SourceRead`；3 条 async 查询:先做归属校验 SELECT（`id == :id AND owner_id == :uid`）`scalar_one_or_none()`，缺失或越权一律 404 `Collection not found`，再做分页 SELECT + collection 维度全量 COUNT；**不**用 JOIN 折叠归属——否则越权 collection 会返回 200 空列表而泄露语义；`limit` 默认 20 `ge=1,le=200` / `offset` `ge=0`，`ORDER BY Source.id ASC`；路由插在 `POST /collections` 与 `POST /upload` 之间，保持 `GET /{id}` 仍为最后；checks.sh `sources)` 层新增 F014-V1（建 collection + 传 3 PDF → 200 / total>=3 / 每项含 5 必需字段）/ F014-V2（不存在 collection → 404）。
 - **F-015** 算子注册表种子:`python -m dataplat_api.cli seed-operators` 幂等 async 子命令,向 `operator` 表插入 MinerU extractor 行(`name=mineru` / `version=0.1.0` / `category=extractor` / `input_kind=source` / `output_kind=document` / `image=dataplat/mineru:0.1.0` 占位待 F-019 / 3 属性合法 JSON Schema `config_schema`);沿用 F-007 `seed-admin` 结构(`SessionLocal()` async session + `await session.execute(select(...))` 幂等守卫 + `session.add` + commit),幂等键为 `(name, version)` 匹配 `uq_operator_name_version`;不入 Alembic 迁移(种子数据不应进 schema 迁移);无 API 面变更故 `make codegen` 不适用(invariant #6 N/A);checks.sh 新增 `operators)` 层 V1(行字段值 + count=1)/ V2(`config_schema->>'type'='object'` 证 JSONB 合法)/ V3(重跑仍 count=1 幂等),并接入 `all)` 链(`runs` 之后)。
+- **F-016** `GET /api/operators` 列出激活算子（可选 `?category=` 过滤）：新增 `routers/operators.py` + `OperatorRead` 模型（10 字段含 id/name/version/category/config_schema + input_kind/output_kind/image/description/is_active，`from_attributes=True`），返回**纯 JSON 数组**（非分页——算子注册表为小型有界目录）；`Depends(get_current_user)` 强制鉴权（无 token → 401）；async `select(Operator).where(Operator.is_active.isnot(False)).order_by(Operator.id.asc())`，`category` 非空时追加 `WHERE category=:c`，未知 category 返回 200 + `[]`（非 404）；`is_active IS NOT FALSE`（非 `=true`）以兼容种子行依赖 server_default 而 ORM 侧可能为 NULL 的情况；checks.sh `operators)` 层在 F-015 之后新增 F016-AUTH（401）/ F016-V1（category=extractor 含 mineru）/ F016-V2（每项 5 必需字段 + mineru v0.1.0 config_schema 为 object）/ F016-V3（category=tagger → 200 + 空数组，无 tagger 种子故空属预期）；openapi.json 同 commit 重生成（invariant #6）。
 
-下一批候选：F-016（列出 operators）/ F-018（文档转换流水线）/ F-023。
+下一批候选：F-018（触发 MinerU 抽取）/ F-023（Lance chunks 表初始化）/ F-024（触发分块）。
 
 ---
 
