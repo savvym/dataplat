@@ -122,7 +122,7 @@ done
 
 ## 当前进度（Phase 0–1）
 
-13/105 features 通过：
+14/105 features 通过：
 
 - **F-001** docker-compose 开发栈
 - **F-002** Postgres 基线迁移（8 张 §4.1 业务表）
@@ -138,8 +138,9 @@ done
 - **F-012** 上传成功后 FastAPI 通知 Dagster（best-effort，commit 之后）：`add_source_partition` 向 `"sources"` `DynamicPartitionsDefinition` 注册 `src_{source_id}`，`report_source_materialization` 为外部资产 `source` 上报一次 `reportRunlessAssetEvents` 物化事件；两次调用各自 try/except，失败仅记 WARNING 仍返回 201（上传已落库不受 Dagster 可用性影响）。新增 `dagster/dagster_platform/definitions.py` 的 `DynamicPartitionsDefinition("sources")` + `AssetSpec(key="source")`；gateway 新增两个 mutation 方法（沿用 launch_hello_world 错误处理，复用 repositorySelector 常量；`DuplicateDynamicPartitionError` 幂等忽略）；`docker-compose.dev.yml` 为全部 4 个 dagster 服务加 `../dagster:/app/dagster` bind mount（改代码后 restart 即生效，无需 rebuild），并新增 `dagster/.gitignore` 屏蔽运行时目录；checks.sh `dagster)` 层新增 F012-V1（partition 出现）+ F012-V2（物化事件）。注：Dagster 1.11.16 实际 mutation 为 `addDynamicPartition`（单数，需 repositorySelector）+ `reportRunlessAssetEvents`（非设计稿的 reportRuntimeAssetMaterialization）。
 
 - **F-013** `GET /api/sources/{id}` 返回 source 完整记录（`SourceRead` 模型，10 字段含 `storage_uri`/`sha256`/`size`/`mime_type`/`collection_id`，`from_attributes=True`）；async `SELECT ... LEFT JOIN source_collection ... WHERE id=:id AND (collection.owner_id=:uid OR collection_id IS NULL)` + `scalar_one_or_none()`，缺失或越权一律 404（不泄露存在性，沿用 F-010 owner-scoping）；新路由追加在固定路径之后，不遮蔽 `/collections`；source 表无 `owner_id`，未归集 source 对所有已认证用户可见（严格归属需迁移，推迟）；checks.sh `sources)` 层新增 F013-V1（200 + 全字段）/ F013-V2（99999 → 404）。
+- **F-014** `GET /api/sources/collections/{id}/sources` 分页列出某 collection 内的 sources（新增 `SourceListResponse {items: list[SourceRead], total: int}`，复用 F-013 的 `SourceRead`；3 条 async 查询:先做归属校验 SELECT（`id == :id AND owner_id == :uid`）`scalar_one_or_none()`，缺失或越权一律 404 `Collection not found`，再做分页 SELECT + collection 维度全量 COUNT；**不**用 JOIN 折叠归属——否则越权 collection 会返回 200 空列表而泄露语义；`limit` 默认 20 `ge=1,le=200` / `offset` `ge=0`，`ORDER BY Source.id ASC`；路由插在 `POST /collections` 与 `POST /upload` 之间，保持 `GET /{id}` 仍为最后；checks.sh `sources)` 层新增 F014-V1（建 collection + 传 3 PDF → 200 / total>=3 / 每项含 5 必需字段）/ F014-V2（不存在 collection → 404）。
 
-下一批候选：F-014（列出 collection 内 sources）/ F-015（MinerU operator 注册种子）/ F-016（列出 operators）。
+下一批候选：F-015（MinerU operator 注册种子）/ F-016（列出 operators）/ F-018（文档转换流水线）。
 
 ---
 
