@@ -1229,6 +1229,50 @@ print('  F017-V1 OK: id=%d name=%s config_schema.type=%s output_schema=%s defaul
     bash "$0" operators   # F-015
     bash "$0" extract     # F-019
     bash "$0" documents   # F-020
+    bash "$0" lance       # F-023
+    ;;
+  lance)
+    # F-023: Lance global chunks table schema initialisation.
+    COMPOSE="docker/docker-compose.dev.yml"
+    [[ -f "$COMPOSE" ]] || { echo "no $COMPOSE yet"; exit 0; }
+
+    MINIO_USER="${MINIO_ROOT_USER:-minioadmin}"
+    MINIO_PASS="${MINIO_ROOT_PASSWORD:-devpassword}"
+
+    echo "--- lance V1: get_or_create_chunks_table creates table with correct schema ---"
+    # The fastapi container already has MINIO_ENDPOINT/ROOT_USER/ROOT_PASSWORD injected
+    # by docker-compose.dev.yml; make_lance_storage_options() reads them via settings.
+    docker compose -f "$COMPOSE" exec -T fastapi python -c "
+from dataplat_api.storage.lance import get_or_create_chunks_table
+dataset = get_or_create_chunks_table()
+schema_names = dataset.schema.names
+required = [
+    'chunk_id', 'source_id', 'text', 'token_count',
+    'attr_quality_score', 'attr_lang_code', 'attr_minhash_signature',
+]
+for field in required:
+    assert field in schema_names, f'missing field {field!r}; schema has: {schema_names}'
+assert len(schema_names) == 24, f'expected 24 fields, got {len(schema_names)}: {schema_names}'
+print('  V1 OK: all required fields present; schema field count =', len(schema_names))
+import sys; sys.exit(0)
+" || { echo "FAIL: lance V1 schema check failed"; exit 1; }
+
+    echo "--- lance V2: table path accessible via MinIO SDK ---"
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      fastapi python -c "
+import boto3, os, sys
+s3 = boto3.client('s3', endpoint_url='http://minio:9000',
+    aws_access_key_id=os.environ['S3_USER'],
+    aws_secret_access_key=os.environ['S3_PASS'])
+result = s3.list_objects_v2(Bucket='lance', Prefix='chunks/')
+keys = [obj['Key'] for obj in result.get('Contents', [])]
+if not keys:
+    print('FAIL: no objects found at s3://lance/chunks/ — table was not written', file=sys.stderr)
+    sys.exit(1)
+print('  V2 OK: found', len(keys), 'objects at s3://lance/chunks/; first =', keys[0])
+sys.exit(0)
+" || { echo "FAIL: lance V2 MinIO SDK check failed"; exit 1; }
     ;;
   extract)
     # F-019: extract_mineru asset — PDF→DoclingDocument + document_variant row.

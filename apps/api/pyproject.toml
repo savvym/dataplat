@@ -31,6 +31,9 @@ dependencies = [
     "PyJWT>=2.9.0",
     # OAuth2PasswordRequestForm requires python-multipart for form body parsing
     "python-multipart>=0.0.9",
+    # Added S023-F-023: Lance columnar store for global chunks table.
+    # pyarrow + lance come as transitive deps — do NOT list separately.
+    "lancedb==0.30.2",
 ]
 
 [tool.hatch.build.targets.wheel]
