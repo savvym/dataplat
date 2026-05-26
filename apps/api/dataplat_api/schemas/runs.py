@@ -46,16 +46,18 @@ class RunStatusResponse(BaseModel):
 
 
 class RunCreate(BaseModel):
-    """Request body for POST /api/runs (F-018).
+    """Request body for POST /api/runs (F-018, F-024).
 
     Fields:
-        asset: The asset to trigger. Currently only "extract_mineru" is supported.
+        asset: The asset to trigger. Supported values:
+               - "extract_mineru" (F-018): run MinerU PDF extraction.
+               - "chunks" (F-024): run chunking on extracted documents.
                Pydantic v2 raises ValidationError for any other value → FastAPI 422.
         source_ids: Non-empty list of source IDs to process.
                     min_length=1 enforces non-empty at the schema level → FastAPI 422.
     """
 
-    asset: Literal["extract_mineru"]
+    asset: Literal["extract_mineru", "chunks"]
     source_ids: Annotated[list[int], Field(min_length=1)]
 
     model_config = ConfigDict(extra="ignore")

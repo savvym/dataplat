@@ -7,7 +7,7 @@ Provides two API surfaces for Dagster run management:
     Protected by JWT Bearer auth (F-008).
 
   runs_router (prefix="/api/runs", tags=["runs"]):
-    POST ""            — trigger a MinerU extraction backfill (HTTP 202 Accepted, F-018)
+    POST ""            — trigger an asset backfill (extract_mineru or chunks, HTTP 202 Accepted, F-018/F-024)
     GET  /{run_id}     — poll current status of a Dagster run (HTTP 200)
     Protected by JWT Bearer auth (F-008).
 
@@ -87,9 +87,9 @@ async def launch_hello_world(
     "",
     response_model=RunCreateResponse,
     status_code=202,
-    summary="Trigger MinerU extraction backfill",
+    summary="Trigger asset backfill (extract_mineru or chunks)",
     description=(
-        "Launch a Dagster asset backfill for extract_mineru over the given source IDs. "
+        "Launch a Dagster asset backfill for extract_mineru or chunks over the given source IDs. "
         "Returns the Dagster backfillId and the Postgres run.id. "
         "Returns 404 if any source_id does not exist. "
         "Returns 503 if Dagster is unreachable or the backfill launch fails. "
@@ -102,13 +102,14 @@ async def trigger_extract_run(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> RunCreateResponse:
-    """Trigger an extract_mineru asset backfill for the given source IDs.
+    """Trigger an asset backfill for the given source IDs (F-018 / F-024).
 
     Ordering (agreed.md §7):
     1. Validate source existence (404 if any missing).
     2. Convert source_ids → partition_keys ("src_{id}").
     3. Register partition keys in sources_partitions (defensive, idempotent).
-    4. Launch Dagster backfill → get backfill_id (503 on DagsterGatewayError).
+    4. Dispatch backfill launch by asset (extract_mineru → launch_extract_backfill,
+       chunks → launch_chunks_backfill). 503 on DagsterGatewayError.
     5. Insert Run row into Postgres and return 202.
     """
     # Step 1: Validate source existence.
@@ -135,20 +136,33 @@ async def trigger_extract_run(
             # Other errors here are unexpected but should not block the backfill.
             pass
 
-    # Step 4: Launch Dagster backfill.
-    try:
-        backfill_id = await gateway.launch_extract_backfill(partition_keys)
-    except DagsterGatewayError as exc:
-        return JSONResponse(  # type: ignore[return-value]
-            status_code=503,
-            content={"detail": str(exc)},
-        )
+    # Step 4: Dispatch backfill launch and metadata by asset.
+    if body.asset == "extract_mineru":
+        try:
+            backfill_id = await gateway.launch_extract_backfill(partition_keys)
+        except DagsterGatewayError as exc:
+            return JSONResponse(  # type: ignore[return-value]
+                status_code=503,
+                content={"detail": str(exc)},
+            )
+        kind = "extract"
+        asset_keys: list[str] = ["extract_mineru"]
+    else:  # body.asset == "chunks" — guaranteed by RunCreate.asset Literal validation
+        try:
+            backfill_id = await gateway.launch_chunks_backfill(partition_keys)
+        except DagsterGatewayError as exc:
+            return JSONResponse(  # type: ignore[return-value]
+                status_code=503,
+                content={"detail": str(exc)},
+            )
+        kind = "chunk"
+        asset_keys = ["chunks"]
 
     # Step 5: Insert Run row into Postgres.
     run = Run(
         dagster_run_id=backfill_id,
-        kind="extract",
-        asset_keys=["extract_mineru"],
+        kind=kind,
+        asset_keys=asset_keys,
         status="pending",
         partition_keys=partition_keys,
         triggered_by=current_user.id,

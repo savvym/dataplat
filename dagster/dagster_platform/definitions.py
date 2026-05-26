@@ -110,6 +110,29 @@ def extract_mineru(context: AssetExecutionContext) -> MaterializeResult:
     )
 
 
+@asset(
+    partitions_def=sources_partitions,
+    description=(
+        "Chunking (F-024 stub): body raises NotImplementedError. "
+        "F-025 will implement the real chunking logic (read DoclingDocument from MinIO, "
+        "split into chunks, write to Lance table)."
+    ),
+)
+def chunks(context: AssetExecutionContext) -> MaterializeResult:
+    """Stub chunking asset (F-024).
+
+    The real body will be implemented in F-025. This stub exists so that:
+      - The Dagster partition definition (`sources_partitions`) is shared.
+      - POST /api/runs?asset=chunks can launch a backfill immediately (F-024).
+      - The asset appears in the Dagster UI asset catalog.
+    Raises NotImplementedError unconditionally so that any accidental execution
+    fails loudly rather than silently producing incorrect output.
+    """
+    raise NotImplementedError(
+        "chunks asset body not yet implemented — see F-025"
+    )
+
+
 @op
 def hello_op(context) -> None:  # type: ignore[no-untyped-def]
     """Minimal op that logs a greeting. Used by hello_world_job (F-005)."""
@@ -130,5 +153,5 @@ def hello_world_job() -> None:
 
 defs = Definitions(
     jobs=[hello_world_job],
-    assets=[source_asset, extract_mineru],
+    assets=[source_asset, extract_mineru, chunks],
 )

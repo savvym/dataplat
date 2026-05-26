@@ -577,6 +577,112 @@ print(f'  F018-V3 OK: backfillId={result[\"id\"]} status={result[\"status\"]} as
 " 2>&1)
     echo "$BACKFILL_CHECK" | grep -q "FAIL" \
       && { echo "$BACKFILL_CHECK"; exit 1; } || echo "$BACKFILL_CHECK"
+
+    # ── F024: chunks asset backfill ─────────────────────────────────────────
+    echo "--- runs F024-setup: upload a fresh PDF for chunks trigger test ---"
+    F024_PDF=$(mktemp --suffix=.pdf)
+    python3 -c "
+import struct, zlib, io
+
+def obj(n, s): return f'{n} 0 obj\n{s}\nendobj\n'
+catalog = obj(1, '<</Type /Catalog /Pages 2 0 R>>')
+pages   = obj(2, '<</Type /Pages /Kids [3 0 R] /Count 1>>')
+page    = obj(3, '<</Type /Page /MediaBox [0 0 612 792] /Parent 2 0 R>>')
+
+body = catalog + pages + page
+xref_offset = len(b'%PDF-1.4\n') + len(body.encode())
+xref = (
+    'xref\n0 4\n'
+    '0000000000 65535 f \n'
+    '0000000009 00000 n \n'
+    '0000000058 00000 n \n'
+    '0000000115 00000 n \n'
+)
+trailer = '<</Size 4 /Root 1 0 R>>'
+pdf = f'%PDF-1.4\n{body}{xref}trailer{trailer}\nstartxref\n{xref_offset}\n%%EOF\n'
+import sys; sys.stdout.buffer.write(pdf.encode())
+" > "$F024_PDF" 2>/dev/null || printf '%%PDF-1.4\n1 0 obj<</Type /Catalog /Pages 2 0 R>>endobj\n2 0 obj<</Type /Pages /Kids[3 0 R] /Count 1>>endobj\n3 0 obj<</Type /Page /MediaBox[0 0 612 792] /Parent 2 0 R>>endobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer<</Size 4 /Root 1 0 R>>\nstartxref\n182\n%%%%EOF\n' > "$F024_PDF"
+    F024_UP_BODY=$(mktemp)
+    F024_UP_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/upload" \
+      -H "Authorization: Bearer $RUNS_TOKEN" \
+      -F "file=@${F024_PDF};type=application/pdf" \
+      -w '%{http_code}' -o "$F024_UP_BODY")
+    rm -f "$F024_PDF"
+    test "$F024_UP_STATUS" = "201" \
+      || { echo "FAIL: runs F024 setup upload returned $F024_UP_STATUS: $(cat "$F024_UP_BODY")"; rm -f "$F024_UP_BODY"; exit 1; }
+    F024_SRC_ID=$(python3 -c "import json; print(json.load(open('$F024_UP_BODY'))['id'])")
+    rm -f "$F024_UP_BODY"
+    echo "  uploaded source id=$F024_SRC_ID"
+
+    echo "--- runs F024-V1: POST /api/runs?asset=chunks returns 202 with dagster_run_id + run_id ---"
+    F024_V1_BODY=$(mktemp)
+    F024_V1_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $RUNS_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"chunks\", \"source_ids\": [${F024_SRC_ID}]}" \
+      -w '%{http_code}' -o "$F024_V1_BODY")
+    test "$F024_V1_STATUS" = "202" \
+      || { echo "FAIL: F024-V1 returned $F024_V1_STATUS: $(cat "$F024_V1_BODY")"; rm -f "$F024_V1_BODY"; exit 1; }
+    python3 -c "
+import json, sys
+body = json.load(open('$F024_V1_BODY'))
+assert 'dagster_run_id' in body, f'missing dagster_run_id: {body}'
+assert 'run_id' in body, f'missing run_id: {body}'
+assert isinstance(body['dagster_run_id'], str) and len(body['dagster_run_id']) > 0, \
+  f'dagster_run_id empty or not str: {body}'
+assert isinstance(body['run_id'], int), f'run_id not int: {body}'
+print('  F024-V1 OK: dagster_run_id=%s run_id=%d' % (body['dagster_run_id'], body['run_id']))
+" || { echo "FAIL: F024-V1 response shape incorrect"; rm -f "$F024_V1_BODY"; exit 1; }
+    F024_BACKFILL_ID=$(python3 -c "import json; print(json.load(open('$F024_V1_BODY'))['dagster_run_id'])")
+    F024_RUN_ID=$(python3 -c "import json; print(json.load(open('$F024_V1_BODY'))['run_id'])")
+    rm -f "$F024_V1_BODY"
+
+    echo "--- runs F024-V2: run row exists with kind=chunk, status=pending ---"
+    docker compose -f "$COMPOSE_F018" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "SELECT kind || '|' || status FROM run WHERE id=${F024_RUN_ID}" \
+      | grep -q '^chunk|pending$' \
+      || { echo "FAIL: F024-V2 — run row missing or wrong kind/status (expected chunk|pending)"; exit 1; }
+    echo "  F024-V2 OK: run row kind=chunk status=pending"
+
+    echo "--- runs F024-V3: Dagster shows backfill for chunks asset ---"
+    F024_BACKFILL_CHECK=$(docker compose -f "$COMPOSE_F018" exec -T dagster-webserver \
+      python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetChunksBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill {
+                id
+                isAssetBackfill
+                status
+                assetSelection { path }
+            }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$F024_BACKFILL_ID'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+typename = result.get('__typename')
+if typename != 'PartitionBackfill':
+    print(f'FAIL: partitionBackfillOrError returned {typename}: {result}', file=sys.stderr)
+    sys.exit(1)
+assert result.get('isAssetBackfill'), f'isAssetBackfill not true: {result}'
+paths = [seg for sel in result.get('assetSelection', []) for seg in sel.get('path', [])]
+assert 'chunks' in paths, f'chunks not in assetSelection paths: {paths}'
+print(f'  F024-V3 OK: backfillId={result[\"id\"]} status={result[\"status\"]} assets={paths}')
+" 2>&1)
+    echo "$F024_BACKFILL_CHECK" | grep -q "FAIL" \
+      && { echo "$F024_BACKFILL_CHECK"; exit 1; } || echo "$F024_BACKFILL_CHECK"
     ;;
   auth)
     # F-007: seed-admin CLI + POST /api/auth/token

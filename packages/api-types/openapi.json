@@ -86,8 +86,8 @@
         "tags": [
           "runs"
         ],
-        "summary": "Trigger MinerU extraction backfill",
-        "description": "Launch a Dagster asset backfill for extract_mineru over the given source IDs. Returns the Dagster backfillId and the Postgres run.id. Returns 404 if any source_id does not exist. Returns 503 if Dagster is unreachable or the backfill launch fails. Requires a valid Bearer JWT (F-008).",
+        "summary": "Trigger asset backfill (extract_mineru or chunks)",
+        "description": "Launch a Dagster asset backfill for extract_mineru or chunks over the given source IDs. Returns the Dagster backfillId and the Postgres run.id. Returns 404 if any source_id does not exist. Returns 503 if Dagster is unreachable or the backfill launch fails. Requires a valid Bearer JWT (F-008).",
         "operationId": "trigger_extract_run_api_runs_post",
         "requestBody": {
           "content": {
@@ -204,6 +204,47 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/documents/{variant_id}/render": {
+      "get": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Render Document Variant",
+        "description": "Render a document variant as markdown.\n\nReturns the canonical DoclingDocument for the given variant as formatted markdown,\nsuitable for display in a browser preview pane.\n\nOwnership-scoping (same as F-020):\n  Step 1 \u2014 Verify the variant exists AND its source is accessible to the caller.\n           If it does not exist or belongs to another user's collection \u2192 404.\n  Step 2 \u2014 Fetch the DoclingDocument JSON from MinIO.\n  Step 3 \u2014 Render to markdown and return with Content-Type: text/markdown.\n\nReturns 200 (markdown text), 404 (variant not found or not accessible), 401 (no auth).",
+        "operationId": "render_document_variant_api_documents__variant_id__render_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "variant_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Variant Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
           },
           "422": {
             "description": "Validation Error",
@@ -1232,7 +1273,10 @@
         "properties": {
           "asset": {
             "type": "string",
-            "const": "extract_mineru",
+            "enum": [
+              "extract_mineru",
+              "chunks"
+            ],
             "title": "Asset"
           },
           "source_ids": {
@@ -1250,7 +1294,7 @@
           "source_ids"
         ],
         "title": "RunCreate",
-        "description": "Request body for POST /api/runs (F-018).\n\nFields:\n    asset: The asset to trigger. Currently only \"extract_mineru\" is supported.\n           Pydantic v2 raises ValidationError for any other value \u2192 FastAPI 422.\n    source_ids: Non-empty list of source IDs to process.\n                min_length=1 enforces non-empty at the schema level \u2192 FastAPI 422."
+        "description": "Request body for POST /api/runs (F-018, F-024).\n\nFields:\n    asset: The asset to trigger. Supported values:\n           - \"extract_mineru\" (F-018): run MinerU PDF extraction.\n           - \"chunks\" (F-024): run chunking on extracted documents.\n           Pydantic v2 raises ValidationError for any other value \u2192 FastAPI 422.\n    source_ids: Non-empty list of source IDs to process.\n                min_length=1 enforces non-empty at the schema level \u2192 FastAPI 422."
       },
       "RunCreateResponse": {
         "properties": {
