@@ -28,7 +28,7 @@ Users need a way to preview the extracted document content in the UI without dow
    - Pydantic schema for the markdown response (or use plain `str` since we're returning raw markdown with special Content-Type)
 
 2. **`apps/api/dataplat_api/routers/documents.py`** (NEW)
-   - Router with single endpoint: `POST /api/documents/{variant_id}/render`
+   - Router with single endpoint: `GET /api/documents/{variant_id}/render`
    - Implements ownership-scoping check
    - Fetches DoclingDocument from MinIO
    - Renders to markdown

@@ -1,5 +1,5 @@
 ---
-description: One-time plan generation from the design doc. Invokes planner sub-agent.
+description: One-time spec generation from the design doc. Invokes planner sub-agent to produce spec/ artifacts. Run this BEFORE the first sprint.
 ---
 
 Goal: produce `spec/product-spec.md`, `spec/tech-direction.md`, and `spec/feature_list.json` from `docs/data_platform_design.md`.
