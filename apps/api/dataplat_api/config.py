@@ -1,5 +1,5 @@
 """Application settings — S002-F-002, extended S004-F-004, extended S007-F-007,
-extended S011-F-011 (MinIO / S3 settings).
+extended S011-F-011 (MinIO / S3 settings), extended S022-F-022 (documents bucket).
 
 Reads configuration from environment variables via pydantic-settings.
 DATABASE_URL is set by docker-compose.dev.yml on the fastapi service.
@@ -11,8 +11,8 @@ MINIO_ENDPOINT / MINIO_ROOT_USER / MINIO_ROOT_PASSWORD are injected by
 docker-compose.dev.yml lines 223-225 (environment block on the fastapi
 service); defaults match the compose dev values so the service starts without
 explicit env-var changes in non-compose contexts.
-MINIO_SOURCES_BUCKET is NOT injected by docker-compose; the Python default
-"sources" matches the bucket created by minio-init one-shot.
+MINIO_SOURCES_BUCKET / MINIO_DOCUMENTS_BUCKET are NOT injected by docker-compose;
+Python defaults "sources" and "documents" match the buckets created by minio-init.
 """
 
 from pydantic_settings import BaseSettings
@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     MINIO_ROOT_USER: str = "minioadmin"
     MINIO_ROOT_PASSWORD: str = "devpassword"
     MINIO_SOURCES_BUCKET: str = "sources"    # bucket created by minio-init
+    
+    # Added S022-F-022: documents bucket for extracted DoclingDocument JSON + images.
+    # Per design doc §4.3, documents are stored at s3://documents/{source_id}/{extractor}/
+    MINIO_DOCUMENTS_BUCKET: str = "documents"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
