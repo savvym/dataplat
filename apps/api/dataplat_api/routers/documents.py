@@ -20,6 +20,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import Response
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -134,13 +135,13 @@ def _render_docling_to_markdown(doc_dict: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-@router.get("/{variant_id}/render", response_class=None)
+@router.get("/{variant_id}/render", response_class=Response)
 async def render_document_variant(
     variant_id: int,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     s3: Any = Depends(get_s3_client),
-) -> Any:
+) -> Response:
     """Render a document variant as markdown.
 
     Returns the canonical DoclingDocument for the given variant as formatted markdown,
@@ -154,8 +155,6 @@ async def render_document_variant(
 
     Returns 200 (markdown text), 404 (variant not found or not accessible), 401 (no auth).
     """
-    from fastapi.responses import Response
-
     # Step 1: variant ownership check (LEFT JOIN + OR logic, same as F-020/F-021).
     result = await session.execute(
         select(DocumentVariant)
