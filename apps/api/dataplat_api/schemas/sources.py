@@ -1,4 +1,4 @@
-"""Source schemas — S011-F-011 / S013-F-013 / S014-F-014.
+"""Source schemas — S011-F-011 / S013-F-013 / S014-F-014 / S020-F-020.
 
 Schemas:
   - SourceUploadResponse: response for POST /api/sources/upload (F-011).
@@ -7,6 +7,8 @@ Schemas:
       Full source record with all 10 fields.
   - SourceListResponse: response for GET /api/sources/collections/{id}/sources (F-014).
       Paginated list of SourceRead items with total count.
+  - DocumentVariantRead: response for GET /api/sources/{source_id}/documents (F-020).
+      Flat representation of a document_variant row (10 fields).
 """
 
 from __future__ import annotations
@@ -62,3 +64,37 @@ class SourceListResponse(BaseModel):
 
     items: list[SourceRead]
     total: int
+
+
+class DocumentVariantRead(BaseModel):
+    """Response schema for GET /api/sources/{source_id}/documents (F-020).
+
+    Flat representation of a single document_variant row. All 10 fields are
+    included: the 5 required by verification criteria plus the 5 additional
+    fields already present in the DB row and needed by downstream consumers.
+
+    Fields:
+      id               — PK; useful for stable client-side keying.
+      extractor_name   — NOT NULL; e.g. "mineru".
+      extractor_version — NOT NULL; e.g. "0.1.0".
+      config_hash      — NOT NULL; SHA-256 of the operator config JSON.
+      storage_prefix   — NOT NULL; e.g. "s3://documents/7/extract_mineru/".
+      page_count       — Nullable; total pages in the extracted document.
+      image_count      — Nullable; total images extracted.
+      is_canonical     — Nullable (server_default false); marks the preferred variant.
+      materialized_at  — Nullable (server_default now()); extraction completion time.
+      dagster_run_id   — Nullable; Dagster run that produced this variant.
+    """
+
+    id: int
+    extractor_name: str
+    extractor_version: str
+    config_hash: str
+    storage_prefix: str
+    page_count: int | None
+    image_count: int | None
+    is_canonical: bool | None
+    materialized_at: datetime | None
+    dagster_run_id: str | None
+
+    model_config = ConfigDict(from_attributes=True)

@@ -443,6 +443,58 @@
         ]
       }
     },
+    "/api/sources/{source_id}/documents": {
+      "get": {
+        "tags": [
+          "sources"
+        ],
+        "summary": "List Document Variants",
+        "description": "Return a flat list of all document_variant rows for the given source.\n\nOwner-scoping (F-020 agreed.md \u00a74.2):\n  Step 1 \u2014 Verify the source exists AND is accessible to the caller.\n           A source is accessible if it has no collection (collection_id IS NULL)\n           or its collection is owned by the caller.\n           If the source does not exist or belongs to another user's collection\n           \u2192 404 (prevents enumeration leaks, same as GET /{id}).\n  Step 2 \u2014 Fetch all document_variant rows for the source, ordered by id ASC.\n           Returns an empty list ([]) when the source exists but has no\n           variants yet (i.e. extraction has not run).\n\nReturns a plain JSON array (not paginated) \u2014 variants per source are small\n(typically 1\u20133 in practice).\n\nAuth required (F-008).",
+        "operationId": "list_document_variants_api_sources__source_id__documents_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DocumentVariantRead"
+                  },
+                  "title": "Response List Document Variants Api Sources  Source Id  Documents Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/sources/{id}": {
       "get": {
         "tags": [
@@ -720,6 +772,101 @@
         ],
         "title": "DagsterStatusResponse",
         "description": "Response body for GET /api/admin/dagster-status.\n\nWhen packages/api-types/ codegen is wired (first web-facing sprint),\nthis model will automatically produce the corresponding TypeScript type\nvia `make codegen` \u2014 no changes needed here at that point."
+      },
+      "DocumentVariantRead": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "extractor_name": {
+            "type": "string",
+            "title": "Extractor Name"
+          },
+          "extractor_version": {
+            "type": "string",
+            "title": "Extractor Version"
+          },
+          "config_hash": {
+            "type": "string",
+            "title": "Config Hash"
+          },
+          "storage_prefix": {
+            "type": "string",
+            "title": "Storage Prefix"
+          },
+          "page_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Count"
+          },
+          "image_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Count"
+          },
+          "is_canonical": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Canonical"
+          },
+          "materialized_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Materialized At"
+          },
+          "dagster_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dagster Run Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "extractor_name",
+          "extractor_version",
+          "config_hash",
+          "storage_prefix",
+          "page_count",
+          "image_count",
+          "is_canonical",
+          "materialized_at",
+          "dagster_run_id"
+        ],
+        "title": "DocumentVariantRead",
+        "description": "Response schema for GET /api/sources/{source_id}/documents (F-020).\n\nFlat representation of a single document_variant row. All 10 fields are\nincluded: the 5 required by verification criteria plus the 5 additional\nfields already present in the DB row and needed by downstream consumers.\n\nFields:\n  id               \u2014 PK; useful for stable client-side keying.\n  extractor_name   \u2014 NOT NULL; e.g. \"mineru\".\n  extractor_version \u2014 NOT NULL; e.g. \"0.1.0\".\n  config_hash      \u2014 NOT NULL; SHA-256 of the operator config JSON.\n  storage_prefix   \u2014 NOT NULL; e.g. \"s3://documents/7/extract_mineru/\".\n  page_count       \u2014 Nullable; total pages in the extracted document.\n  image_count      \u2014 Nullable; total images extracted.\n  is_canonical     \u2014 Nullable (server_default false); marks the preferred variant.\n  materialized_at  \u2014 Nullable (server_default now()); extraction completion time.\n  dagster_run_id   \u2014 Nullable; Dagster run that produced this variant."
       },
       "HTTPValidationError": {
         "properties": {

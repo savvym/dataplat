@@ -1,22 +1,24 @@
 """Sources router — S008-F-008 stub + S009-F-009 POST + S010-F-010 GET list
 + S011-F-011 POST /upload + S012-F-012 Dagster notify + S013-F-013 GET /{id}
-+ S014-F-014 GET /collections/{id}/sources.
++ S014-F-014 GET /collections/{id}/sources + S020-F-020 GET /{source_id}/documents.
 
 Provides:
   GET  /api/sources/collections                    — paginated list of caller's collections (F-010).
   POST /api/sources/collections                    — create a source_collection row (F-009).
   GET  /api/sources/collections/{id}/sources       — paginated list of sources in a collection (F-014).
   POST /api/sources/upload                         — upload a PDF source file (F-011).
+  GET  /api/sources/{source_id}/documents          — flat list of document_variant rows (F-020).
   GET  /api/sources/{id}                           — full source detail record (F-013).
 
 Auth enforcement (Depends(get_current_user)) is the F-008 deliverable and
 MUST NOT be removed from any handler.
 
-Route-ordering note (F-013/F-014): GET /{id} is registered LAST so that the
+Route-ordering note (F-013/F-014/F-020): GET /{id} is registered LAST so that the
 fixed-prefix paths /collections and /upload are matched first by FastAPI's
 router.  GET /collections/{id}/sources (3 segments) cannot collide with GET
 /{id} (1 segment) but must still be registered before the catch-all to keep
-the ordering invariant clear and maintainable.
+the ordering invariant clear and maintainable.  GET /{source_id}/documents
+(2 segments) is registered immediately before /{id} for the same reason.
 """
 
 from __future__ import annotations
@@ -35,14 +37,19 @@ from dataplat_api.auth.dependencies import get_current_user
 from dataplat_api.config import settings
 from dataplat_api.dagster.dependencies import get_dagster_gateway
 from dataplat_api.dagster.gateway import DagsterGateway, DagsterGatewayError
-from dataplat_api.db.models import Source, SourceCollection, User
+from dataplat_api.db.models import DocumentVariant, Source, SourceCollection, User
 from dataplat_api.db.session import get_session
 from dataplat_api.schemas.collections import (
     CollectionListResponse,
     SourceCollectionCreate,
     SourceCollectionOut,
 )
-from dataplat_api.schemas.sources import SourceListResponse, SourceRead, SourceUploadResponse
+from dataplat_api.schemas.sources import (
+    DocumentVariantRead,
+    SourceListResponse,
+    SourceRead,
+    SourceUploadResponse,
+)
 from dataplat_api.storage.s3 import get_s3_client
 
 logger = logging.getLogger(__name__)
@@ -328,6 +335,62 @@ async def upload_source(
 
     # Step 12: return minimal response per agreed.md §3-D8.
     return SourceUploadResponse(id=source.id, storage_uri=source.storage_uri)
+
+
+@router.get(
+    "/{source_id}/documents",
+    response_model=list[DocumentVariantRead],
+    summary="List Document Variants",
+)
+async def list_document_variants(
+    source_id: int,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[DocumentVariantRead]:
+    """Return a flat list of all document_variant rows for the given source.
+
+    Owner-scoping (F-020 agreed.md §4.2):
+      Step 1 — Verify the source exists AND is accessible to the caller.
+               A source is accessible if it has no collection (collection_id IS NULL)
+               or its collection is owned by the caller.
+               If the source does not exist or belongs to another user's collection
+               → 404 (prevents enumeration leaks, same as GET /{id}).
+      Step 2 — Fetch all document_variant rows for the source, ordered by id ASC.
+               Returns an empty list ([]) when the source exists but has no
+               variants yet (i.e. extraction has not run).
+
+    Returns a plain JSON array (not paginated) — variants per source are small
+    (typically 1–3 in practice).
+
+    Auth required (F-008).
+    """
+    # Step 1: source existence and accessibility check.
+    result = await session.execute(
+        select(Source)
+        .join(SourceCollection, Source.collection_id == SourceCollection.id, isouter=True)
+        .where(Source.id == source_id)
+        .where(
+            or_(
+                SourceCollection.owner_id == current_user.id,
+                Source.collection_id.is_(None),
+            )
+        )
+    )
+    source = result.scalar_one_or_none()
+    if source is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source not found",
+        )
+
+    # Step 2: fetch all document_variant rows for this source, ordered by id ASC.
+    variants_result = await session.execute(
+        select(DocumentVariant)
+        .where(DocumentVariant.source_id == source_id)
+        .order_by(DocumentVariant.id.asc())
+    )
+    rows = variants_result.scalars().all()
+    return [DocumentVariantRead.model_validate(row) for row in rows]
 
 
 @router.get("/{id}", response_model=SourceRead, summary="Get Source Detail")
