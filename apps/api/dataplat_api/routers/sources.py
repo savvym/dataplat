@@ -1,6 +1,7 @@
 """Sources router — S008-F-008 stub + S009-F-009 POST + S010-F-010 GET list
 + S011-F-011 POST /upload + S012-F-012 Dagster notify + S013-F-013 GET /{id}
-+ S014-F-014 GET /collections/{id}/sources + S020-F-020 GET /{source_id}/documents.
++ S014-F-014 GET /collections/{id}/sources + S020-F-020 GET /{source_id}/documents
++ S021-F-021 POST /{source_id}/documents/{extractor_name}/set-canonical.
 
 Provides:
   GET  /api/sources/collections                    — paginated list of caller's collections (F-010).
@@ -8,17 +9,19 @@ Provides:
   GET  /api/sources/collections/{id}/sources       — paginated list of sources in a collection (F-014).
   POST /api/sources/upload                         — upload a PDF source file (F-011).
   GET  /api/sources/{source_id}/documents          — flat list of document_variant rows (F-020).
+  POST /api/sources/{source_id}/documents/{extractor_name}/set-canonical — set canonical variant (F-021).
   GET  /api/sources/{id}                           — full source detail record (F-013).
 
 Auth enforcement (Depends(get_current_user)) is the F-008 deliverable and
 MUST NOT be removed from any handler.
 
-Route-ordering note (F-013/F-014/F-020): GET /{id} is registered LAST so that the
+Route-ordering note (F-013/F-014/F-020/F-021): GET /{id} is registered LAST so that the
 fixed-prefix paths /collections and /upload are matched first by FastAPI's
 router.  GET /collections/{id}/sources (3 segments) cannot collide with GET
 /{id} (1 segment) but must still be registered before the catch-all to keep
 the ordering invariant clear and maintainable.  GET /{source_id}/documents
-(2 segments) is registered immediately before /{id} for the same reason.
+(2 segments) is registered immediately before the F-021 4-segment POST, which
+is registered before the /{id} catch-all.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -391,6 +394,102 @@ async def list_document_variants(
     )
     rows = variants_result.scalars().all()
     return [DocumentVariantRead.model_validate(row) for row in rows]
+
+
+@router.post(
+    "/{source_id}/documents/{extractor_name}/set-canonical",
+    response_model=DocumentVariantRead,
+    summary="Set Canonical Document Variant",
+)
+async def set_canonical_document_variant(
+    source_id: int,
+    extractor_name: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> DocumentVariantRead:
+    """Atomically set the canonical document_variant for a source.
+
+    Designates the latest (highest id) document_variant row with the given
+    extractor_name as the canonical variant for the source. Exactly one
+    canonical variant per source is enforced by the partial unique index
+    idx_doc_canonical.
+
+    Steps (all within one transaction):
+      1. Source accessibility check — same LEFT JOIN ownership query as F-020.
+         Returns 404 "Source not found" if the source does not exist or is
+         not accessible to the caller (prevents enumeration leaks).
+      2. Find target variant — SELECT the latest (highest id) document_variant
+         row for this source + extractor_name. Returns 404 "Variant not found"
+         if no such row exists.
+      3. Atomic CLEAR + SET — bulk-UPDATE is_canonical=FALSE on all canonical
+         variants for this source, then SET is_canonical=TRUE on the target.
+         CLEAR-first prevents any transient violation of idx_doc_canonical.
+      4. Commit → refresh target → return DocumentVariantRead (HTTP 200).
+
+    session.refresh(target) is REQUIRED after commit because expire_on_commit=True
+    (default) expires ORM attributes; accessing them without refresh would raise
+    MissingGreenlet on AsyncSession.
+
+    Auth required (F-008).
+    """
+    # Step 1: source existence and accessibility check (same as F-020).
+    result = await session.execute(
+        select(Source)
+        .join(SourceCollection, Source.collection_id == SourceCollection.id, isouter=True)
+        .where(Source.id == source_id)
+        .where(
+            or_(
+                SourceCollection.owner_id == current_user.id,
+                Source.collection_id.is_(None),
+            )
+        )
+    )
+    source = result.scalar_one_or_none()
+    if source is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source not found",
+        )
+
+    # Step 2: find the latest variant for this extractor_name.
+    variant_result = await session.execute(
+        select(DocumentVariant)
+        .where(DocumentVariant.source_id == source_id)
+        .where(DocumentVariant.extractor_name == extractor_name)
+        .order_by(DocumentVariant.id.desc())
+        .limit(1)
+    )
+    target = variant_result.scalar_one_or_none()
+    if target is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Variant not found",
+        )
+
+    # Step 3: atomic CLEAR + SET within the open transaction.
+    # CLEAR: un-set any existing canonical row for this source.
+    await session.execute(
+        update(DocumentVariant)
+        .where(DocumentVariant.source_id == source_id)
+        .where(DocumentVariant.is_canonical.is_(True))
+        .values(is_canonical=False)
+        .execution_options(synchronize_session=False)
+    )
+    # SET: mark the target as canonical.
+    await session.execute(
+        update(DocumentVariant)
+        .where(DocumentVariant.id == target.id)
+        .values(is_canonical=True)
+        .execution_options(synchronize_session=False)
+    )
+
+    # Step 4: commit, refresh, and return.
+    await session.commit()
+    # refresh() is REQUIRED: expire_on_commit=True means all ORM attrs are
+    # expired after commit; accessing them on AsyncSession without refresh
+    # raises MissingGreenlet.
+    await session.refresh(target)
+    return DocumentVariantRead.model_validate(target)
 
 
 @router.get("/{id}", response_model=SourceRead, summary="Get Source Detail")

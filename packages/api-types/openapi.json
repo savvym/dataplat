@@ -495,6 +495,63 @@
         }
       }
     },
+    "/api/sources/{source_id}/documents/{extractor_name}/set-canonical": {
+      "post": {
+        "tags": [
+          "sources"
+        ],
+        "summary": "Set Canonical Document Variant",
+        "description": "Atomically set the canonical document_variant for a source.\n\nDesignates the latest (highest id) document_variant row with the given\nextractor_name as the canonical variant for the source. Exactly one\ncanonical variant per source is enforced by the partial unique index\nidx_doc_canonical.\n\nSteps (all within one transaction):\n  1. Source accessibility check \u2014 same LEFT JOIN ownership query as F-020.\n     Returns 404 \"Source not found\" if the source does not exist or is\n     not accessible to the caller (prevents enumeration leaks).\n  2. Find target variant \u2014 SELECT the latest (highest id) document_variant\n     row for this source + extractor_name. Returns 404 \"Variant not found\"\n     if no such row exists.\n  3. Atomic CLEAR + SET \u2014 bulk-UPDATE is_canonical=FALSE on all canonical\n     variants for this source, then SET is_canonical=TRUE on the target.\n     CLEAR-first prevents any transient violation of idx_doc_canonical.\n  4. Commit \u2192 refresh target \u2192 return DocumentVariantRead (HTTP 200).\n\nsession.refresh(target) is REQUIRED after commit because expire_on_commit=True\n(default) expires ORM attributes; accessing them without refresh would raise\nMissingGreenlet on AsyncSession.\n\nAuth required (F-008).",
+        "operationId": "set_canonical_document_variant_api_sources__source_id__documents__extractor_name__set_canonical_post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Source Id"
+            }
+          },
+          {
+            "name": "extractor_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Extractor Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentVariantRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/sources/{id}": {
       "get": {
         "tags": [

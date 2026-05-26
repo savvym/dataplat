@@ -1544,6 +1544,78 @@ print('  F020-V1 OK: array len=%d, extractor_name=%s, is_canonical=%s' % (
     test "$V2_STATUS" = "404" \
       || { echo "FAIL: F020-V2 returned $V2_STATUS (expected 404)"; exit 1; }
     echo "  F020-V2 OK: /api/sources/99999/documents → 404"
+
+    # F-021: POST /api/sources/{source_id}/documents/{extractor_name}/set-canonical
+    echo "--- documents F021-V1: POST set-canonical returns 200 with correct fields ---"
+    SC_BODY=$(mktemp)
+    SC_STATUS=$(curl -sS -X POST \
+      -H "Authorization: Bearer $DOC_TOKEN" \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/${DOC_SRC_ID}/documents/mineru/set-canonical" \
+      -w '%{http_code}' -o "$SC_BODY")
+    test "$SC_STATUS" = "200" \
+      || { echo "FAIL: F021-V1 returned $SC_STATUS: $(cat "$SC_BODY")"; rm -f "$SC_BODY"; exit 1; }
+    python3 -c "
+import json, sys
+body = json.load(open('$SC_BODY'))
+assert body.get('extractor_name') == 'mineru', f'extractor_name wrong: {body}'
+assert body.get('is_canonical') is True, f'is_canonical not True: {body}'
+print('  F021-V1 OK: extractor_name=%s is_canonical=%s' % (body['extractor_name'], body['is_canonical']))
+" || { echo "FAIL: F021-V1 response assertion failed"; rm -f "$SC_BODY"; exit 1; }
+    rm -f "$SC_BODY"
+
+    echo "--- documents F021-V2: exactly 1 canonical row; extractor_name=mineru ---"
+    CANON_COUNT=$(docker compose -f "$COMPOSE" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "SELECT COUNT(*) FROM document_variant
+         WHERE source_id=${DOC_SRC_ID} AND is_canonical=TRUE" \
+      | tr -d '[:space:]')
+    test "$CANON_COUNT" = "1" \
+      || { echo "FAIL: F021-V2 expected 1 canonical row, got '$CANON_COUNT'"; exit 1; }
+    echo "  F021-V2 OK: canonical row count = $CANON_COUNT"
+
+    CANON_NAME=$(docker compose -f "$COMPOSE" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "SELECT extractor_name FROM document_variant
+         WHERE source_id=${DOC_SRC_ID} AND is_canonical=TRUE" \
+      | tr -d '[:space:]')
+    test "$CANON_NAME" = "mineru" \
+      || { echo "FAIL: F021-V2 canonical extractor_name='$CANON_NAME' (expected 'mineru')"; exit 1; }
+    echo "  F021-V2 OK: canonical extractor_name = $CANON_NAME"
+
+    echo "--- documents F021-V3a: idx_doc_canonical index exists with is_canonical filter ---"
+    IDX_DEF=$(docker compose -f "$COMPOSE" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "SELECT indexdef FROM pg_indexes
+         WHERE tablename='document_variant' AND indexname='idx_doc_canonical'" \
+      | tr -d '[:space:]')
+    echo "$IDX_DEF" | grep -qi "is_canonical" \
+      || { echo "FAIL: F021-V3a — idx_doc_canonical missing or lacks is_canonical filter: '$IDX_DEF'"; exit 1; }
+    echo "  F021-V3a OK: idx_doc_canonical exists with is_canonical filter"
+
+    echo "--- documents F021-V3b: unique index rejects a second TRUE row ---"
+    # Insert a probe variant (idempotent via ON CONFLICT DO NOTHING).
+    docker compose -f "$COMPOSE" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "INSERT INTO document_variant
+           (source_id, extractor_name, extractor_version, config_hash, storage_prefix, is_canonical)
+         VALUES
+           (${DOC_SRC_ID}, 'probe', '0.0.1', 'aabbcc', 's3://documents/probe/', FALSE)
+         ON CONFLICT (source_id, extractor_name, config_hash) DO NOTHING"
+    # Attempt to make the probe row canonical — should ERROR because another
+    # row for this source already has is_canonical=TRUE.
+    V3B_OUT=$(docker compose -f "$COMPOSE" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -c \
+        "UPDATE document_variant SET is_canonical=TRUE
+         WHERE extractor_name='probe' AND source_id=${DOC_SRC_ID}" \
+      2>&1 || true)
+    echo "$V3B_OUT" | grep -qi "ERROR" \
+      || { echo "FAIL: F021-V3b — unique constraint was NOT enforced: $V3B_OUT"; exit 1; }
+    echo "  F021-V3b OK: unique constraint rejected second is_canonical=TRUE row"
+    # Cleanup probe row.
+    docker compose -f "$COMPOSE" exec -T postgres \
+      psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+        "DELETE FROM document_variant WHERE extractor_name='probe' AND source_id=${DOC_SRC_ID}"
+    echo "  F021-V3b cleanup OK: probe row deleted"
     ;;
   *)
     echo "Unknown layer: $LAYER" >&2
