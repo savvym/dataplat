@@ -24,6 +24,8 @@ WORKDIR /app
 # F-019: boto3 (S3/MinIO client), docling-core (DoclingDocument type for minimal-valid
 # extraction output), pytest (needed to run dagster/tests/ unit tests inside the container
 # via `python -m pytest` in the checks.sh extract) layer — not otherwise in this image).
+# F-025: lancedb (Lance vector table), pyarrow (Arrow schema + record batches),
+# tiktoken (cl100k_base BPE tokeniser for fixed-size chunking).
 RUN pip install --no-cache-dir \
     dagster==1.11.16 \
     dagster-webserver==1.11.16 \
@@ -31,6 +33,9 @@ RUN pip install --no-cache-dir \
     psycopg2-binary==2.9.10 \
     boto3==1.37.38 \
     docling-core==2.77.0 \
+    lancedb==0.30.2 \
+    pyarrow==24.0.0 \
+    tiktoken==0.7.0 \
     pytest==8.3.4
 
 # Copy the entire dagster/ directory from the repo root into the image.
@@ -39,6 +44,11 @@ RUN pip install --no-cache-dir \
 #   /app/dagster/dagster.yaml         — Postgres storage config
 #   /app/dagster/dagster_platform/    — minimal Python package (empty Definitions)
 COPY dagster/ /app/dagster/
+
+# F-025: bake the tiktoken cl100k_base BPE vocabulary into the image so that
+# the encoder loads instantly at runtime without fetching from the internet
+# (R4 mitigation in agreed.md — air-gapped / slow-network environments).
+RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
 
 # PYTHONPATH: lets Python find dagster_platform.definitions
 ENV PYTHONPATH=/app/dagster

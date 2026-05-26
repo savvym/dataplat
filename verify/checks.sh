@@ -1336,6 +1336,7 @@ print('  F017-V1 OK: id=%d name=%s config_schema.type=%s output_schema=%s defaul
     bash "$0" extract     # F-019
     bash "$0" documents   # F-020
     bash "$0" lance       # F-023
+    bash "$0" chunks      # F-025
     ;;
   lance)
     # F-023: Lance global chunks table schema initialisation.
@@ -1766,6 +1767,296 @@ print('  F021-V1 OK: extractor_name=%s is_canonical=%s' % (body['extractor_name'
       psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
         "DELETE FROM document_variant WHERE extractor_name='probe' AND source_id=${DOC_SRC_ID}"
     echo "  F021-V3b cleanup OK: probe row deleted"
+    ;;
+  chunks)
+    # F-025: chunks asset — fixed-size token chunking into Lance table.
+    # Requires: dagster image rebuilt with lancedb/pyarrow/tiktoken,
+    # MINIO_LANCE_BUCKET env injected into all dagster services,
+    # and the Lance chunks table already initialised (lance) layer).
+    COMPOSE="docker/docker-compose.dev.yml"
+    [[ -f "$COMPOSE" ]] || { echo "no $COMPOSE yet"; exit 0; }
+
+    FASTAPI_HOST_PORT="${FASTAPI_HOST_PORT:-18000}"
+    MINIO_USER="${MINIO_ROOT_USER:-minioadmin}"
+    MINIO_PASS="${MINIO_ROOT_PASSWORD:-devpassword}"
+
+    echo "--- chunks: unit tests for chunker.py helpers (inside dagster-webserver) ---"
+    # tiktoken and lancedb are only in the Dagster image, not in the apps/api venv.
+    # The bind-mount makes /app/dagster/tests/test_chunker.py available without rebuild.
+    docker compose -f "$COMPOSE" exec -T dagster-webserver \
+      python -m pytest /app/dagster/tests/test_chunker.py -q \
+      || { echo "FAIL: chunker unit tests failed"; exit 1; }
+    echo "  chunker unit tests: OK"
+
+    echo "--- chunks: mint Bearer token ---"
+    CH_TOKEN_BODY=$(mktemp)
+    CH_TOKEN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/auth/token" \
+      -d "username=admin@example.com&password=testpassword123" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -w '%{http_code}' -o "$CH_TOKEN_BODY")
+    test "$CH_TOKEN_STATUS" = "200" \
+      || { echo "FAIL: chunks) could not mint token (status $CH_TOKEN_STATUS) — run 'bash $0 auth' first"; rm -f "$CH_TOKEN_BODY"; exit 1; }
+    CH_TOKEN=$(python3 -c "import json; print(json.load(open('$CH_TOKEN_BODY'))['access_token'])")
+    rm -f "$CH_TOKEN_BODY"
+
+    echo "--- chunks: create collection (source_collection_id required for Lance row) ---"
+    CH_COLL_BODY=$(mktemp)
+    CH_COLL_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/collections" \
+      -H "Authorization: Bearer $CH_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"name": "test-chunks-f025", "dataset_card_md": "F025 chunks test collection"}' \
+      -w '%{http_code}' -o "$CH_COLL_BODY")
+    # Allow 409 (already exists from a previous run) — read the id either way.
+    if test "$CH_COLL_STATUS" = "409"; then
+      CH_COLL_ID=$(docker compose -f "$COMPOSE" exec -T postgres \
+        psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+          "SELECT id FROM source_collection WHERE name='test-chunks-f025' LIMIT 1" \
+        | tr -d '[:space:]')
+    else
+      test "$CH_COLL_STATUS" = "201" \
+        || { echo "FAIL: chunks) collection create returned $CH_COLL_STATUS: $(cat "$CH_COLL_BODY")"; rm -f "$CH_COLL_BODY"; exit 1; }
+      CH_COLL_ID=$(python3 -c "import json; print(json.load(open('$CH_COLL_BODY'))['id'])")
+    fi
+    rm -f "$CH_COLL_BODY"
+    echo "  collection id=$CH_COLL_ID"
+
+    echo "--- chunks: upload source PDF (with collection_id=$CH_COLL_ID) ---"
+    CH_PDF=$(mktemp /tmp/f025-XXXXXX.pdf)
+    python3 -c "
+pdf = (b'%PDF-1.4\n1 0 obj<</Type /Catalog /Pages 2 0 R>>endobj\n'
+       b'2 0 obj<</Type /Pages /Kids[3 0 R] /Count 1>>endobj\n'
+       b'3 0 obj<</Type /Page /MediaBox[0 0 612 792] /Parent 2 0 R>>endobj\n'
+       b'xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n'
+       b'0000000058 00000 n \n0000000115 00000 n \n'
+       b'trailer<</Size 4 /Root 1 0 R>>\nstartxref\n182\n%%EOF\n')
+open('$CH_PDF', 'wb').write(pdf)
+"
+    CH_UP_BODY=$(mktemp)
+    CH_UP_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/upload" \
+      -H "Authorization: Bearer $CH_TOKEN" \
+      -F "file=@${CH_PDF};type=application/pdf" \
+      -F "collection_id=${CH_COLL_ID}" \
+      -w '%{http_code}' -o "$CH_UP_BODY")
+    rm -f "$CH_PDF"
+    test "$CH_UP_STATUS" = "201" \
+      || { echo "FAIL: chunks) upload returned $CH_UP_STATUS: $(cat "$CH_UP_BODY")"; rm -f "$CH_UP_BODY"; exit 1; }
+    CH_SRC_ID=$(python3 -c "import json; print(json.load(open('$CH_UP_BODY'))['id'])")
+    rm -f "$CH_UP_BODY"
+    echo "  uploaded source id=$CH_SRC_ID"
+
+    echo "--- chunks: POST /api/runs extract_mineru (prerequisite — no graph dep per D9) ---"
+    CH_EX_RUN_BODY=$(mktemp)
+    CH_EX_RUN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $CH_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"extract_mineru\", \"source_ids\": [${CH_SRC_ID}]}" \
+      -w '%{http_code}' -o "$CH_EX_RUN_BODY")
+    test "$CH_EX_RUN_STATUS" = "202" \
+      || { echo "FAIL: chunks) POST /api/runs extract_mineru returned $CH_EX_RUN_STATUS: $(cat "$CH_EX_RUN_BODY")"; rm -f "$CH_EX_RUN_BODY"; exit 1; }
+    CH_EX_BACKFILL_ID=$(python3 -c "import json; print(json.load(open('$CH_EX_RUN_BODY'))['dagster_run_id'])")
+    rm -f "$CH_EX_RUN_BODY"
+    echo "  extract_mineru backfill launched: id=$CH_EX_BACKFILL_ID"
+
+    echo "--- chunks: poll extract_mineru backfill to COMPLETED_SUCCESS (<=120s) ---"
+    CH_EX_BF_STATUS="UNKNOWN"
+    for i in $(seq 1 40); do
+      CH_EX_BF_STATUS=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+        python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill { status }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$CH_EX_BACKFILL_ID'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+print(result.get('status', result.get('message', 'UNKNOWN')))
+" 2>&1 | tail -1)
+      echo "  [$i/40] extract_mineru backfill status: $CH_EX_BF_STATUS"
+      case "$CH_EX_BF_STATUS" in
+        COMPLETED_SUCCESS) break ;;
+        COMPLETED_FAILED|CANCELED|*FAIL*)
+          echo "FAIL: extract_mineru backfill reached terminal non-success state: $CH_EX_BF_STATUS"; exit 1 ;;
+      esac
+      sleep 3
+    done
+    test "$CH_EX_BF_STATUS" = "COMPLETED_SUCCESS" \
+      || { echo "FAIL: timeout waiting for extract_mineru COMPLETED_SUCCESS (last status=$CH_EX_BF_STATUS)"; exit 1; }
+    echo "  extract_mineru COMPLETED_SUCCESS"
+
+    echo "--- chunks: POST /api/runs chunks ---"
+    CH_RUN_BODY=$(mktemp)
+    CH_RUN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $CH_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"chunks\", \"source_ids\": [${CH_SRC_ID}]}" \
+      -w '%{http_code}' -o "$CH_RUN_BODY")
+    test "$CH_RUN_STATUS" = "202" \
+      || { echo "FAIL: chunks) POST /api/runs chunks returned $CH_RUN_STATUS: $(cat "$CH_RUN_BODY")"; rm -f "$CH_RUN_BODY"; exit 1; }
+    CH_BACKFILL_ID=$(python3 -c "import json; print(json.load(open('$CH_RUN_BODY'))['dagster_run_id'])")
+    rm -f "$CH_RUN_BODY"
+    echo "  chunks backfill launched: id=$CH_BACKFILL_ID"
+
+    echo "--- chunks: poll chunks backfill to COMPLETED_SUCCESS (<=120s) ---"
+    CH_BF_STATUS="UNKNOWN"
+    for i in $(seq 1 40); do
+      CH_BF_STATUS=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+        python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill { status }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$CH_BACKFILL_ID'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+print(result.get('status', result.get('message', 'UNKNOWN')))
+" 2>&1 | tail -1)
+      echo "  [$i/40] chunks backfill status: $CH_BF_STATUS"
+      case "$CH_BF_STATUS" in
+        COMPLETED_SUCCESS) break ;;
+        COMPLETED_FAILED|CANCELED|*FAIL*)
+          echo "FAIL: chunks backfill reached terminal non-success state: $CH_BF_STATUS"; exit 1 ;;
+      esac
+      sleep 3
+    done
+    test "$CH_BF_STATUS" = "COMPLETED_SUCCESS" \
+      || { echo "FAIL: timeout waiting for chunks COMPLETED_SUCCESS (last status=$CH_BF_STATUS)"; exit 1; }
+    echo "  chunks COMPLETED_SUCCESS"
+
+    echo "--- chunks V1: Lance row count > 0 for source ---"
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${CH_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os, sys
+src_id = int(os.environ['SRC_ID'])
+db = lancedb.connect(
+    's3://lance/chunks',
+    storage_options={
+        'aws_access_key_id': os.environ['S3_USER'],
+        'aws_secret_access_key': os.environ['S3_PASS'],
+        'endpoint': 'http://minio:9000',
+        'aws_region': 'us-east-1',
+        'allow_http': 'true',
+    })
+t = db.open_table('chunks')
+n = t.count_rows(f'source_id = {src_id} AND producer_asset = \'chunks\'')
+assert n > 0, f'expected >0 rows for source_id={src_id}, got {n}'
+print(f'  V1 OK: {n} chunk rows written for source_id={src_id}')
+sys.exit(0)
+" || { echo "FAIL: chunks V1 row count check failed"; exit 1; }
+
+    echo "--- chunks V2: chunk_id matches {source_id}_{seq} pattern ---"
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${CH_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os, sys, re
+src_id = int(os.environ['SRC_ID'])
+db = lancedb.connect(
+    's3://lance/chunks',
+    storage_options={
+        'aws_access_key_id': os.environ['S3_USER'],
+        'aws_secret_access_key': os.environ['S3_PASS'],
+        'endpoint': 'http://minio:9000',
+        'aws_region': 'us-east-1',
+        'allow_http': 'true',
+    })
+t = db.open_table('chunks')
+rows = t.search().where(f'source_id = {src_id} AND producer_asset = \'chunks\'').select(['chunk_id']).to_list()
+assert rows, f'no rows returned for source_id={src_id}'
+pattern = re.compile(rf'^{src_id}_\d+$')
+for row in rows:
+    cid = row['chunk_id']
+    assert pattern.fullmatch(cid), f'chunk_id {cid!r} does not match pattern'
+seqs = sorted(int(r['chunk_id'].split('_')[1]) for r in rows)
+assert seqs == list(range(len(seqs))), f'chunk_id sequences not contiguous: {seqs}'
+print(f'  V2 OK: all {len(rows)} chunk_ids match pattern, seq 0..{len(rows)-1}')
+sys.exit(0)
+" || { echo "FAIL: chunks V2 chunk_id pattern check failed"; exit 1; }
+
+    echo "--- chunks V3: text non-null, token_count > 0 and <= 512 ---"
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${CH_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os, sys
+src_id = int(os.environ['SRC_ID'])
+db = lancedb.connect(
+    's3://lance/chunks',
+    storage_options={
+        'aws_access_key_id': os.environ['S3_USER'],
+        'aws_secret_access_key': os.environ['S3_PASS'],
+        'endpoint': 'http://minio:9000',
+        'aws_region': 'us-east-1',
+        'allow_http': 'true',
+    })
+t = db.open_table('chunks')
+rows = t.search().where(f'source_id = {src_id} AND producer_asset = \'chunks\'').select(['text', 'token_count']).to_list()
+assert rows, f'no rows for source_id={src_id}'
+for row in rows:
+    assert row['text'], f'text is empty/null for a chunk'
+    tc = row['token_count']
+    assert tc > 0, f'token_count={tc} is not > 0'
+    assert tc <= 512, f'token_count={tc} > 512 (window boundary exceeded)'
+print(f'  V3 OK: {len(rows)} rows all have non-empty text and 0 < token_count <= 512')
+sys.exit(0)
+" || { echo "FAIL: chunks V3 text/token_count check failed"; exit 1; }
+
+    echo "--- chunks V4: augmented_from null, attr_* null, producer_asset='chunks' ---"
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${CH_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os, sys
+src_id = int(os.environ['SRC_ID'])
+db = lancedb.connect(
+    's3://lance/chunks',
+    storage_options={
+        'aws_access_key_id': os.environ['S3_USER'],
+        'aws_secret_access_key': os.environ['S3_PASS'],
+        'endpoint': 'http://minio:9000',
+        'aws_region': 'us-east-1',
+        'allow_http': 'true',
+    })
+t = db.open_table('chunks')
+rows = t.search().where(f'source_id = {src_id} AND producer_asset = \'chunks\'') \
+    .select(['producer_asset', 'augmented_from', 'attr_quality_score', 'attr_lang_code', 'attr_embed_vector']) \
+    .to_list()
+assert rows, f'no rows for source_id={src_id}'
+for row in rows:
+    assert row['producer_asset'] == 'chunks', f\"producer_asset={row['producer_asset']!r} expected 'chunks'\"
+    assert row['augmented_from'] is None, f\"augmented_from={row['augmented_from']!r} expected None\"
+    assert row['attr_quality_score'] is None, f'attr_quality_score should be None'
+    assert row['attr_lang_code'] is None, f'attr_lang_code should be None'
+    assert row['attr_embed_vector'] is None, f'attr_embed_vector should be None'
+print(f'  V4 OK: {len(rows)} rows have producer_asset=chunks, augmented_from=None, attr_*=None')
+sys.exit(0)
+" || { echo "FAIL: chunks V4 metadata check failed"; exit 1; }
     ;;
   *)
     echo "Unknown layer: $LAYER" >&2

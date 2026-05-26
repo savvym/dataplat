@@ -7,6 +7,9 @@
 # F-019: extract_mineru — real asset body: reads PDF from MinIO, produces a minimal
 #        valid DoclingDocument JSON, writes it back to MinIO, writes a document_variant
 #        row to Postgres. Uses helpers from extractor.py.
+# F-025: chunks — real asset body: reads DoclingDocument, splits into ≤512-token
+#        fixed-size chunks, writes rows to Lance 'chunks' table. Uses helpers
+#        from chunker.py.
 
 from dagster import (
     AssetExecutionContext,
@@ -27,6 +30,14 @@ from dagster_platform.extractor import (
     insert_document_variant,
     read_pdf_bytes,
     write_document_json,
+)
+
+from dagster_platform.chunker import (
+    extract_text_from_document,
+    fixed_size_chunk,
+    lookup_source_collection_id,
+    read_docling_document,
+    write_chunks_to_lance,
 )
 
 # F-012: Dynamic partition definition for source uploads.
@@ -113,23 +124,55 @@ def extract_mineru(context: AssetExecutionContext) -> MaterializeResult:
 @asset(
     partitions_def=sources_partitions,
     description=(
-        "Chunking (F-024 stub): body raises NotImplementedError. "
-        "F-025 will implement the real chunking logic (read DoclingDocument from MinIO, "
-        "split into chunks, write to Lance table)."
+        "Chunking (F-025): reads DoclingDocument from MinIO, splits text into "
+        "≤512-token fixed-size chunks using tiktoken cl100k_base, writes rows "
+        "to the Lance 'chunks' table at s3://{MINIO_LANCE_BUCKET}/chunks."
     ),
 )
 def chunks(context: AssetExecutionContext) -> MaterializeResult:
-    """Stub chunking asset (F-024).
+    """Real chunking asset (F-025).
 
-    The real body will be implemented in F-025. This stub exists so that:
-      - The Dagster partition definition (`sources_partitions`) is shared.
-      - POST /api/runs?asset=chunks can launch a backfill immediately (F-024).
-      - The asset appears in the Dagster UI asset catalog.
-    Raises NotImplementedError unconditionally so that any accidental execution
-    fails loudly rather than silently producing incorrect output.
+    Steps (agreed.md §3):
+      1. Parse source_id from partition key.
+      2. Look up source_collection_id from Postgres.
+      3. Build boto3 S3 client from MINIO_* env.
+      4. Read DoclingDocument JSON from s3://documents/{source_id}/extract_mineru/doc.docling.json.
+      5. Extract plain text (fallback chain: markdown → doc.name → f"source_{source_id}").
+      6. Split into ≤512-token fixed-size chunks (tiktoken cl100k_base).
+      7. Write chunk rows to Lance 'chunks' table (idempotent: delete then insert).
+      8. Return MaterializeResult with metadata (source_id, chunk_count, text_length).
     """
-    raise NotImplementedError(
-        "chunks asset body not yet implemented — see F-025"
+    partition_key = context.partition_key
+    source_id = int(partition_key.removeprefix("src_"))
+    context.log.info(
+        "chunks: starting for partition_key=%s source_id=%d",
+        partition_key,
+        source_id,
+    )
+
+    collection_id = lookup_source_collection_id(source_id)
+    context.log.info("chunks: resolved collection_id=%d", collection_id)
+
+    s3 = build_s3_client()
+
+    doc = read_docling_document(s3, source_id)
+    context.log.info("chunks: loaded DoclingDocument for source_id=%d", source_id)
+
+    text = extract_text_from_document(doc, source_id)
+    context.log.info("chunks: extracted text length=%d chars", len(text))
+
+    rows = fixed_size_chunk(text, source_id=source_id, collection_id=collection_id)
+    context.log.info("chunks: produced %d chunk(s)", len(rows))
+
+    write_chunks_to_lance(rows)
+    context.log.info("chunks: wrote %d rows to Lance chunks table", len(rows))
+
+    return MaterializeResult(
+        metadata={
+            "source_id": MetadataValue.int(source_id),
+            "chunk_count": MetadataValue.int(len(rows)),
+            "text_length": MetadataValue.int(len(text)),
+        }
     )
 
 

@@ -134,6 +134,8 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-devpassword}
       POSTGRES_DB: ${POSTGRES_DB:-platform}
       PLATFORM_DB_URL: postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-devpassword}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-platform}
+      # F-025: Lance vector table bucket (defaults to "lance", same as apps/api default).
+      MINIO_LANCE_BUCKET: ${MINIO_LANCE_BUCKET:-lance}
     command: dagster-webserver -h 0.0.0.0 -p 3000 -w /app/dagster/workspace.yaml
     volumes:
       - ../dagster:/app/dagster
@@ -169,6 +171,8 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-devpassword}
       POSTGRES_DB: ${POSTGRES_DB:-platform}
       PLATFORM_DB_URL: postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-devpassword}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-platform}
+      # F-025: Lance vector table bucket.
+      MINIO_LANCE_BUCKET: ${MINIO_LANCE_BUCKET:-lance}
     command: dagster-daemon run -w /app/dagster/workspace.yaml
     volumes:
       - ../dagster:/app/dagster
@@ -195,6 +199,13 @@ services:
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
       POSTGRES_DB_DAGSTER: ${POSTGRES_DB_DAGSTER:-platform_dagster}
       WORKER_PROFILE: cpu
+      # F-025: MinIO access needed for chunks asset (read DoclingDocument + write Lance).
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-devpassword}
+      MINIO_LANCE_BUCKET: ${MINIO_LANCE_BUCKET:-lance}
+      POSTGRES_DB: ${POSTGRES_DB:-platform}
+      PLATFORM_DB_URL: postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-devpassword}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-platform}
     command: sleep infinity
     volumes:
       - ../dagster:/app/dagster
@@ -221,6 +232,13 @@ services:
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
       POSTGRES_DB_DAGSTER: ${POSTGRES_DB_DAGSTER:-platform_dagster}
       WORKER_PROFILE: heavy
+      # F-025: MinIO access needed for chunks asset (read DoclingDocument + write Lance).
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-devpassword}
+      MINIO_LANCE_BUCKET: ${MINIO_LANCE_BUCKET:-lance}
+      POSTGRES_DB: ${POSTGRES_DB:-platform}
+      PLATFORM_DB_URL: postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-devpassword}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-platform}
     command: sleep infinity
     volumes:
       - ../dagster:/app/dagster
