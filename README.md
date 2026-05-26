@@ -122,7 +122,7 @@ done
 
 ## 当前进度（Phase 0–1）
 
-21/105 features 通过：
+`22/105` features passing. Latest: F-022 (document preview endpoint).
 
 - **F-001** docker-compose 开发栈
 - **F-002** Postgres 基线迁移（8 张 §4.1 业务表）
