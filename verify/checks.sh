@@ -1228,6 +1228,7 @@ print('  F017-V1 OK: id=%d name=%s config_schema.type=%s output_schema=%s defaul
     bash "$0" runs
     bash "$0" operators   # F-015
     bash "$0" extract     # F-019
+    bash "$0" documents   # F-020
     ;;
   extract)
     # F-019: extract_mineru asset — PDF→DoclingDocument + document_variant row.
@@ -1371,7 +1372,6 @@ print('  per-partition run SUCCESS: runId=%s' % success[0]['runId'])
       | grep -q '^mineru|0\.1\.0$' \
       || { echo "FAIL: V1-proxy — document_variant row missing or extractor_name/version wrong"; exit 1; }
     echo "  V1-proxy OK: document_variant row exists (extractor_name=mineru, version=0.1.0)"
-    echo "  NOTE: literal GET /api/sources/${EX_SRC_ID}/documents check deferred to F-020"
 
     echo "--- extract V2: MinIO doc.docling.json exists + valid JSON + schema_name ---"
     docker compose -f "$COMPOSE" exec -T \
@@ -1414,6 +1414,136 @@ except Exception as e:
       | grep -qE '^[0-9a-f-]{30,}$' \
       || { echo "FAIL: V4 — dagster_run_id is NULL or not a UUID"; exit 1; }
     echo "  V4 OK: dagster_run_id is non-null UUID"
+    ;;
+  documents)
+    # F-020: GET /api/sources/{source_id}/documents — list document variants.
+    # Self-contained: uploads a source, triggers extraction, waits for success,
+    # then asserts V1 (200 + correct fields) and V2 (99999 → 404).
+    COMPOSE="docker/docker-compose.dev.yml"
+    [[ -f "$COMPOSE" ]] || { echo "no $COMPOSE yet"; exit 0; }
+
+    FASTAPI_HOST_PORT="${FASTAPI_HOST_PORT:-18000}"
+
+    echo "--- documents: mint Bearer token ---"
+    DOC_TOKEN_BODY=$(mktemp)
+    DOC_TOKEN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/auth/token" \
+      -d "username=admin@example.com&password=testpassword123" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -w '%{http_code}' -o "$DOC_TOKEN_BODY")
+    test "$DOC_TOKEN_STATUS" = "200" \
+      || { echo "FAIL: documents) could not mint token (status $DOC_TOKEN_STATUS) — run 'bash $0 auth' first"; rm -f "$DOC_TOKEN_BODY"; exit 1; }
+    DOC_TOKEN=$(python3 -c "import json; print(json.load(open('$DOC_TOKEN_BODY'))['access_token'])")
+    rm -f "$DOC_TOKEN_BODY"
+
+    echo "--- documents: upload source PDF ---"
+    DOC_PDF=$(mktemp /tmp/f020-XXXXXX.pdf)
+    python3 -c "
+pdf = (b'%PDF-1.4\n1 0 obj<</Type /Catalog /Pages 2 0 R>>endobj\n'
+       b'2 0 obj<</Type /Pages /Kids[3 0 R] /Count 1>>endobj\n'
+       b'3 0 obj<</Type /Page /MediaBox[0 0 612 792] /Parent 2 0 R>>endobj\n'
+       b'xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n'
+       b'0000000058 00000 n \n0000000115 00000 n \n'
+       b'trailer<</Size 4 /Root 1 0 R>>\nstartxref\n182\n%%EOF\nf020')
+open('$DOC_PDF', 'wb').write(pdf)
+"
+    DOC_UP_BODY=$(mktemp)
+    DOC_UP_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/upload" \
+      -H "Authorization: Bearer $DOC_TOKEN" \
+      -F "file=@${DOC_PDF};type=application/pdf" \
+      -w '%{http_code}' -o "$DOC_UP_BODY")
+    rm -f "$DOC_PDF"
+    test "$DOC_UP_STATUS" = "201" \
+      || { echo "FAIL: documents) upload returned $DOC_UP_STATUS: $(cat "$DOC_UP_BODY")"; rm -f "$DOC_UP_BODY"; exit 1; }
+    DOC_SRC_ID=$(python3 -c "import json; print(json.load(open('$DOC_UP_BODY'))['id'])")
+    rm -f "$DOC_UP_BODY"
+    echo "  uploaded source id=$DOC_SRC_ID"
+
+    echo "--- documents: trigger extract_mineru backfill ---"
+    DOC_RUN_BODY=$(mktemp)
+    DOC_RUN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $DOC_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"extract_mineru\", \"source_ids\": [${DOC_SRC_ID}]}" \
+      -w '%{http_code}' -o "$DOC_RUN_BODY")
+    test "$DOC_RUN_STATUS" = "202" \
+      || { echo "FAIL: documents) POST /api/runs returned $DOC_RUN_STATUS: $(cat "$DOC_RUN_BODY")"; rm -f "$DOC_RUN_BODY"; exit 1; }
+    DOC_BACKFILL_ID=$(python3 -c "import json; print(json.load(open('$DOC_RUN_BODY'))['dagster_run_id'])")
+    rm -f "$DOC_RUN_BODY"
+    echo "  backfill launched: id=$DOC_BACKFILL_ID"
+
+    echo "--- documents: poll backfill to COMPLETED_SUCCESS (≤120s) ---"
+    DOC_BF_STATUS="UNKNOWN"
+    for i in $(seq 1 40); do
+      DOC_BF_STATUS=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+        python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill { status }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$DOC_BACKFILL_ID'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+print(result.get('status', result.get('message', 'UNKNOWN')))
+" 2>&1 | tail -1)
+      echo "  [$i/40] backfill status: $DOC_BF_STATUS"
+      case "$DOC_BF_STATUS" in
+        COMPLETED_SUCCESS) break ;;
+        COMPLETED_FAILED|CANCELED|*FAIL*)
+          echo "FAIL: backfill reached terminal non-success state: $DOC_BF_STATUS"; exit 1 ;;
+      esac
+      sleep 3
+    done
+    test "$DOC_BF_STATUS" = "COMPLETED_SUCCESS" \
+      || { echo "FAIL: timeout waiting for backfill COMPLETED_SUCCESS (last status=$DOC_BF_STATUS)"; exit 1; }
+    echo "  backfill COMPLETED_SUCCESS"
+
+    echo "--- documents F020-V1: GET /api/sources/{id}/documents returns 200 + correct fields ---"
+    V1_BODY=$(mktemp)
+    V1_STATUS=$(curl -sS -X GET \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/${DOC_SRC_ID}/documents" \
+      -H "Authorization: Bearer $DOC_TOKEN" \
+      -w '%{http_code}' -o "$V1_BODY")
+    test "$V1_STATUS" = "200" \
+      || { echo "FAIL: F020-V1 returned $V1_STATUS: $(cat "$V1_BODY")"; rm -f "$V1_BODY"; exit 1; }
+    python3 -c "
+import json, sys
+body = json.load(open('$V1_BODY'))
+assert isinstance(body, list), f'expected list, got {type(body).__name__}: {body}'
+assert len(body) >= 1, f'expected at least 1 variant, got {len(body)}: {body}'
+item = body[0]
+required = ['extractor_name', 'extractor_version', 'storage_prefix', 'is_canonical', 'materialized_at']
+for field in required:
+    assert field in item, f'item missing required field {field!r}: {item}'
+assert item['extractor_name'] == 'mineru', f'extractor_name wrong: {item}'
+assert isinstance(item['is_canonical'], bool), f'is_canonical not bool: {item}'
+assert item['materialized_at'] is not None, f'materialized_at is None: {item}'
+assert item['storage_prefix'], f'storage_prefix is empty: {item}'
+print('  F020-V1 OK: array len=%d, extractor_name=%s, is_canonical=%s' % (
+    len(body), item['extractor_name'], item['is_canonical']))
+" || { echo "FAIL: F020-V1 assertion failed"; rm -f "$V1_BODY"; exit 1; }
+    rm -f "$V1_BODY"
+
+    echo "--- documents F020-V2: GET /api/sources/99999/documents returns 404 ---"
+    V2_STATUS=$(curl -sS -X GET \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/99999/documents" \
+      -H "Authorization: Bearer $DOC_TOKEN" \
+      -o /dev/null -w '%{http_code}')
+    test "$V2_STATUS" = "404" \
+      || { echo "FAIL: F020-V2 returned $V2_STATUS (expected 404)"; exit 1; }
+    echo "  F020-V2 OK: /api/sources/99999/documents → 404"
     ;;
   *)
     echo "Unknown layer: $LAYER" >&2
