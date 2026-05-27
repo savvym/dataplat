@@ -1337,6 +1337,7 @@ print('  F017-V1 OK: id=%d name=%s config_schema.type=%s output_schema=%s defaul
     bash "$0" documents   # F-020
     bash "$0" lance       # F-023
     bash "$0" chunks      # F-025
+    bash "$0" attr_quality  # F-027
     ;;
   lance)
     # F-023: Lance global chunks table schema initialisation.
@@ -2179,6 +2180,283 @@ assert len(ids) == len(set(ids)), f'duplicate chunk_ids: {len(ids)} rows, {len(s
 print(f'  V6 OK: {len(ids)} chunk_ids, all unique')
 sys.exit(0)
 " || { echo "FAIL V6: duplicate chunk_ids detected"; exit 1; }
+    ;;
+  attr_quality)
+    # F-027: attr_quality asset — column-mode update of attr_quality_score and
+    # attr_quality_provider on existing producer_asset='chunks' rows.
+    COMPOSE="docker/docker-compose.dev.yml"
+    [[ -f "$COMPOSE" ]] || { echo "no $COMPOSE yet"; exit 0; }
+
+    FASTAPI_HOST_PORT="${FASTAPI_HOST_PORT:-18000}"
+    MINIO_USER="${MINIO_ROOT_USER:-minioadmin}"
+    MINIO_PASS="${MINIO_ROOT_PASSWORD:-devpassword}"
+
+    echo "--- attr_quality: unit tests for quality_tagger.py helpers ---"
+    docker compose -f "$COMPOSE" exec -T dagster-webserver \
+      python -m pytest /app/dagster/tests/test_quality_tagger.py -q || \
+      { echo "FAIL: attr_quality unit tests failed"; exit 1; }
+
+    echo "--- attr_quality: mint Bearer token ---"
+    AQ_TOKEN_BODY=$(mktemp)
+    AQ_TOKEN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/auth/token" \
+      -d "username=admin@example.com&password=testpassword123" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -w '%{http_code}' -o "$AQ_TOKEN_BODY")
+    test "$AQ_TOKEN_STATUS" = "200" \
+      || { echo "FAIL: attr_quality) could not mint token (status $AQ_TOKEN_STATUS) — run 'bash $0 auth' first"; rm -f "$AQ_TOKEN_BODY"; exit 1; }
+    AQ_TOKEN=$(python3 -c "import json; print(json.load(open('$AQ_TOKEN_BODY'))['access_token'])")
+    rm -f "$AQ_TOKEN_BODY"
+
+    echo "--- attr_quality: create collection ---"
+    AQ_COLL_BODY=$(mktemp)
+    AQ_COLL_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/collections" \
+      -H "Authorization: Bearer $AQ_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"name": "test-attr-quality-f027", "dataset_card_md": "F027 attr_quality test collection"}' \
+      -w '%{http_code}' -o "$AQ_COLL_BODY")
+    if test "$AQ_COLL_STATUS" = "409"; then
+      AQ_COLL_ID=$(docker compose -f "$COMPOSE" exec -T postgres \
+        psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+          "SELECT id FROM source_collection WHERE name='test-attr-quality-f027' LIMIT 1" \
+        | tr -d '[:space:]')
+    else
+      test "$AQ_COLL_STATUS" = "201" \
+        || { echo "FAIL: attr_quality) collection create returned $AQ_COLL_STATUS: $(cat "$AQ_COLL_BODY")"; rm -f "$AQ_COLL_BODY"; exit 1; }
+      AQ_COLL_ID=$(python3 -c "import json; print(json.load(open('$AQ_COLL_BODY'))['id'])")
+    fi
+    rm -f "$AQ_COLL_BODY"
+    echo "  collection id=$AQ_COLL_ID"
+
+    echo "--- attr_quality: upload source PDF ---"
+    AQ_PDF=$(mktemp /tmp/f027-XXXXXX.pdf)
+    python3 -c "
+pdf = (b'%PDF-1.4\n1 0 obj<</Type /Catalog /Pages 2 0 R>>endobj\n'
+       b'2 0 obj<</Type /Pages /Kids[3 0 R] /Count 1>>endobj\n'
+       b'3 0 obj<</Type /Page /MediaBox[0 0 612 792] /Parent 2 0 R>>endobj\n'
+       b'xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n'
+       b'0000000058 00000 n \n0000000115 00000 n \n'
+       b'trailer<</Size 4 /Root 1 0 R>>\nstartxref\n182\n%%EOF\n')
+open('$AQ_PDF', 'wb').write(pdf)
+"
+    AQ_UP_BODY=$(mktemp)
+    AQ_UP_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/upload" \
+      -H "Authorization: Bearer $AQ_TOKEN" \
+      -F "file=@${AQ_PDF};type=application/pdf" \
+      -F "collection_id=${AQ_COLL_ID}" \
+      -w '%{http_code}' -o "$AQ_UP_BODY")
+    rm -f "$AQ_PDF"
+    test "$AQ_UP_STATUS" = "201" \
+      || { echo "FAIL: attr_quality) upload returned $AQ_UP_STATUS: $(cat "$AQ_UP_BODY")"; rm -f "$AQ_UP_BODY"; exit 1; }
+    AQ_SRC_ID=$(python3 -c "import json; print(json.load(open('$AQ_UP_BODY'))['id'])")
+    rm -f "$AQ_UP_BODY"
+    echo "  uploaded source id=$AQ_SRC_ID"
+
+    echo "--- attr_quality: prerequisite — POST /api/runs extract_mineru ---"
+    AQ_EX_RUN_BODY=$(mktemp)
+    AQ_EX_RUN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $AQ_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"extract_mineru\", \"source_ids\": [${AQ_SRC_ID}]}" \
+      -w '%{http_code}' -o "$AQ_EX_RUN_BODY")
+    test "$AQ_EX_RUN_STATUS" = "202" \
+      || { echo "FAIL: attr_quality) POST extract_mineru returned $AQ_EX_RUN_STATUS: $(cat "$AQ_EX_RUN_BODY")"; rm -f "$AQ_EX_RUN_BODY"; exit 1; }
+    AQ_EX_BACKFILL_ID=$(python3 -c "import json; print(json.load(open('$AQ_EX_RUN_BODY'))['dagster_run_id'])")
+    rm -f "$AQ_EX_RUN_BODY"
+    echo "  extract_mineru backfill launched: id=$AQ_EX_BACKFILL_ID"
+
+    echo "--- attr_quality: poll extract_mineru to COMPLETED_SUCCESS (<=120s) ---"
+    AQ_EX_BF_STATUS="UNKNOWN"
+    for i in $(seq 1 40); do
+      AQ_EX_BF_STATUS=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+        python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill { status }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$AQ_EX_BACKFILL_ID'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+print(result.get('status', result.get('message', 'UNKNOWN')))
+" 2>&1 | tail -1)
+      echo "  [$i/40] extract_mineru backfill status: $AQ_EX_BF_STATUS"
+      case "$AQ_EX_BF_STATUS" in
+        COMPLETED_SUCCESS) break ;;
+        COMPLETED_FAILED|CANCELED|*FAIL*)
+          echo "FAIL: extract_mineru backfill reached terminal non-success state: $AQ_EX_BF_STATUS"; exit 1 ;;
+      esac
+      sleep 3
+    done
+    test "$AQ_EX_BF_STATUS" = "COMPLETED_SUCCESS" \
+      || { echo "FAIL: timeout waiting for extract_mineru COMPLETED_SUCCESS (last status=$AQ_EX_BF_STATUS)"; exit 1; }
+    echo "  extract_mineru COMPLETED_SUCCESS"
+
+    echo "--- attr_quality: prerequisite — POST /api/runs chunks ---"
+    AQ_CH_RUN_BODY=$(mktemp)
+    AQ_CH_RUN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $AQ_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"chunks\", \"source_ids\": [${AQ_SRC_ID}]}" \
+      -w '%{http_code}' -o "$AQ_CH_RUN_BODY")
+    test "$AQ_CH_RUN_STATUS" = "202" \
+      || { echo "FAIL: attr_quality) POST chunks returned $AQ_CH_RUN_STATUS: $(cat "$AQ_CH_RUN_BODY")"; rm -f "$AQ_CH_RUN_BODY"; exit 1; }
+    AQ_CH_BACKFILL_ID=$(python3 -c "import json; print(json.load(open('$AQ_CH_RUN_BODY'))['dagster_run_id'])")
+    rm -f "$AQ_CH_RUN_BODY"
+    echo "  chunks backfill launched: id=$AQ_CH_BACKFILL_ID"
+
+    echo "--- attr_quality: poll chunks to COMPLETED_SUCCESS (<=120s) ---"
+    AQ_CH_BF_STATUS="UNKNOWN"
+    for i in $(seq 1 40); do
+      AQ_CH_BF_STATUS=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+        python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill { status }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$AQ_CH_BACKFILL_ID'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+print(result.get('status', result.get('message', 'UNKNOWN')))
+" 2>&1 | tail -1)
+      echo "  [$i/40] chunks backfill status: $AQ_CH_BF_STATUS"
+      case "$AQ_CH_BF_STATUS" in
+        COMPLETED_SUCCESS) break ;;
+        COMPLETED_FAILED|CANCELED|*FAIL*)
+          echo "FAIL: chunks backfill reached terminal non-success state: $AQ_CH_BF_STATUS"; exit 1 ;;
+      esac
+      sleep 3
+    done
+    test "$AQ_CH_BF_STATUS" = "COMPLETED_SUCCESS" \
+      || { echo "FAIL: timeout waiting for chunks COMPLETED_SUCCESS (last status=$AQ_CH_BF_STATUS)"; exit 1; }
+    echo "  chunks COMPLETED_SUCCESS"
+
+    echo "--- attr_quality: V1 — POST /api/runs attr_quality returns 202 ---"
+    AQ_RUN_BODY=$(mktemp)
+    AQ_RUN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $AQ_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"attr_quality\", \"source_ids\": [${AQ_SRC_ID}]}" \
+      -w '%{http_code}' -o "$AQ_RUN_BODY")
+    test "$AQ_RUN_STATUS" = "202" \
+      || { echo "FAIL: attr_quality V1 POST /api/runs returned $AQ_RUN_STATUS: $(cat "$AQ_RUN_BODY")"; rm -f "$AQ_RUN_BODY"; exit 1; }
+    AQ_BACKFILL_ID=$(python3 -c "import json; print(json.load(open('$AQ_RUN_BODY'))['dagster_run_id'])")
+    rm -f "$AQ_RUN_BODY"
+    echo "  V1 OK: attr_quality backfill launched: id=$AQ_BACKFILL_ID"
+
+    echo "--- attr_quality: poll attr_quality backfill to COMPLETED_SUCCESS (<=120s) ---"
+    AQ_BF_STATUS="UNKNOWN"
+    for i in $(seq 1 40); do
+      AQ_BF_STATUS=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+        python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill { status }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$AQ_BACKFILL_ID'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+print(result.get('status', result.get('message', 'UNKNOWN')))
+" 2>&1 | tail -1)
+      echo "  [$i/40] attr_quality backfill status: $AQ_BF_STATUS"
+      case "$AQ_BF_STATUS" in
+        COMPLETED_SUCCESS) break ;;
+        COMPLETED_FAILED|CANCELED|*FAIL*)
+          echo "FAIL: attr_quality backfill reached terminal non-success state: $AQ_BF_STATUS"; exit 1 ;;
+      esac
+      sleep 3
+    done
+    test "$AQ_BF_STATUS" = "COMPLETED_SUCCESS" \
+      || { echo "FAIL: timeout waiting for attr_quality COMPLETED_SUCCESS (last status=$AQ_BF_STATUS)"; exit 1; }
+    echo "  attr_quality COMPLETED_SUCCESS"
+
+    echo "--- attr_quality: V2 — attr_quality_score non-null for all rows ---"
+    # V2 query: source_id only (NO producer_asset filter per agreed.md Issue 2 fix).
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${AQ_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os, sys
+src_id = int(os.environ['SRC_ID'])
+db = lancedb.connect(
+    's3://lance/chunks',
+    storage_options={
+        'aws_access_key_id': os.environ['S3_USER'],
+        'aws_secret_access_key': os.environ['S3_PASS'],
+        'endpoint': 'http://minio:9000',
+        'aws_region': 'us-east-1',
+        'allow_http': 'true',
+    })
+t = db.open_table('chunks')
+rows = t.search().where(f'source_id = {src_id}').select(['attr_quality_score']).to_list()
+assert rows, f'no rows found for source_id={src_id}'
+null_count = sum(1 for r in rows if r['attr_quality_score'] is None)
+assert null_count == 0, f'V2 FAIL: {null_count}/{len(rows)} rows have null attr_quality_score'
+print(f'  V2 OK: all {len(rows)} rows have non-null attr_quality_score for source_id={src_id}')
+sys.exit(0)
+" || { echo "FAIL: attr_quality V2 score non-null check failed"; exit 1; }
+
+    echo "--- attr_quality: V3 — attr_quality_provider = 'length_heuristic' for all rows ---"
+    # V3 query: source_id only (NO producer_asset filter per agreed.md Issue 2 fix).
+    # F-027 stub deviation: provider is 'length_heuristic', not an LLM model name.
+    # F-028 will replace with real model name once LLM gateway exists.
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${AQ_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os, sys
+src_id = int(os.environ['SRC_ID'])
+db = lancedb.connect(
+    's3://lance/chunks',
+    storage_options={
+        'aws_access_key_id': os.environ['S3_USER'],
+        'aws_secret_access_key': os.environ['S3_PASS'],
+        'endpoint': 'http://minio:9000',
+        'aws_region': 'us-east-1',
+        'allow_http': 'true',
+    })
+t = db.open_table('chunks')
+rows = t.search().where(f'source_id = {src_id}').select(['attr_quality_provider']).to_list()
+assert rows, f'no rows found for source_id={src_id}'
+wrong = [r['attr_quality_provider'] for r in rows if r['attr_quality_provider'] != 'length_heuristic']
+assert not wrong, f'V3 FAIL: {len(wrong)} rows have unexpected provider values: {set(wrong)}'
+print(f'  V3 OK: all {len(rows)} rows have attr_quality_provider=length_heuristic for source_id={src_id}')
+sys.exit(0)
+" || { echo "FAIL: attr_quality V3 provider check failed"; exit 1; }
     ;;
   *)
     echo "Unknown layer: $LAYER" >&2

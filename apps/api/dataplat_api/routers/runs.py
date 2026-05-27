@@ -7,7 +7,7 @@ Provides two API surfaces for Dagster run management:
     Protected by JWT Bearer auth (F-008).
 
   runs_router (prefix="/api/runs", tags=["runs"]):
-    POST ""            — trigger an asset backfill (extract_mineru or chunks, HTTP 202 Accepted, F-018/F-024)
+    POST ""            — trigger an asset backfill (extract_mineru, chunks, or attr_quality, HTTP 202 Accepted, F-018/F-024/F-027)
     GET  /{run_id}     — poll current status of a Dagster run (HTTP 200)
     Protected by JWT Bearer auth (F-008).
 
@@ -147,7 +147,17 @@ async def trigger_extract_run(
             )
         kind = "extract"
         asset_keys: list[str] = ["extract_mineru"]
-    else:  # body.asset == "chunks" — guaranteed by RunCreate.asset Literal validation
+    elif body.asset == "attr_quality":
+        try:
+            backfill_id = await gateway.launch_attr_quality_backfill(partition_keys)
+        except DagsterGatewayError as exc:
+            return JSONResponse(  # type: ignore[return-value]
+                status_code=503,
+                content={"detail": str(exc)},
+            )
+        kind = "attr_quality"
+        asset_keys = ["attr_quality"]
+    elif body.asset == "chunks":
         try:
             backfill_id = await gateway.launch_chunks_backfill(partition_keys)
         except DagsterGatewayError as exc:
@@ -157,6 +167,10 @@ async def trigger_extract_run(
             )
         kind = "chunk"
         asset_keys = ["chunks"]
+    else:
+        # Defensive: should be unreachable because RunCreate.asset Literal
+        # validation rejects any other value at parse time (→ FastAPI 422).
+        raise ValueError(f"Unhandled asset type: {body.asset!r}")
 
     # Step 5: Insert Run row into Postgres.
     run = Run(

@@ -17,6 +17,7 @@ Methods:
     report_source_materialization(...) -> None      # F-012
     launch_extract_backfill(partition_keys) -> str  # F-018
     launch_chunks_backfill(partition_keys) -> str   # F-024
+    launch_attr_quality_backfill(partition_keys) -> str  # F-027
     reload_code_location(...) -> None               # future
 """
 
@@ -184,6 +185,37 @@ mutation LaunchExtractBackfill($backfillParams: LaunchBackfillParams!) {
 # extract backfill mutation; separated for self-documentation.
 _LAUNCH_CHUNKS_BACKFILL_MUTATION = """
 mutation LaunchChunksBackfill($backfillParams: LaunchBackfillParams!) {
+  launchPartitionBackfill(backfillParams: $backfillParams) {
+    __typename
+    ... on LaunchBackfillSuccess {
+      backfillId
+    }
+    ... on PartitionSetNotFoundError {
+      message
+    }
+    ... on PartitionKeysNotFoundError {
+      message
+    }
+    ... on PythonError {
+      message
+    }
+    ... on UnauthorizedError {
+      message
+    }
+    ... on InvalidSubsetError {
+      message
+    }
+    ... on RunConflict {
+      message
+    }
+  }
+}
+"""
+
+# F-027: Launch an asset backfill for attr_quality. Structurally identical to
+# the chunks backfill mutation; only the asset path differs.
+_LAUNCH_ATTR_QUALITY_BACKFILL_MUTATION = """
+mutation LaunchAttrQualityBackfill($backfillParams: LaunchBackfillParams!) {
   launchPartitionBackfill(backfillParams: $backfillParams) {
     __typename
     ... on LaunchBackfillSuccess {
@@ -816,6 +848,88 @@ class DagsterGateway:
                     "assetSelection": [{"path": ["chunks"]}],
                     "partitionNames": partition_keys,
                     "title": "F-024 chunks",
+                }
+            },
+        }
+        try:
+            response = await self._client.post(self._url, json=payload)
+        except httpx.TimeoutException as exc:
+            raise DagsterGatewayError("Dagster request timed out") from exc
+        except httpx.ConnectError as exc:
+            raise DagsterGatewayError("Cannot connect to Dagster") from exc
+        except httpx.HTTPError as exc:
+            raise DagsterGatewayError(f"HTTP error contacting Dagster: {exc}") from exc
+
+        if not response.is_success:
+            raise DagsterGatewayError(
+                f"Dagster returned HTTP {response.status_code}"
+            )
+
+        try:
+            body = response.json()
+        except Exception as exc:
+            raise DagsterGatewayError("Dagster response is not valid JSON") from exc
+
+        errors = body.get("errors")
+        if errors:
+            msg = errors[0].get("message", "unknown GraphQL error") if isinstance(errors, list) else str(errors)
+            raise DagsterGatewayError(f"Dagster GraphQL error: {msg}")
+
+        try:
+            backfill_result = body["data"]["launchPartitionBackfill"]
+        except (KeyError, TypeError) as exc:
+            raise DagsterGatewayError(
+                "Unexpected Dagster launchPartitionBackfill response shape"
+            ) from exc
+
+        typename = backfill_result.get("__typename")
+        if typename != "LaunchBackfillSuccess":
+            msg = backfill_result.get("message", f"launchPartitionBackfill returned {typename}")
+            raise DagsterGatewayError(f"Dagster launchPartitionBackfill failed: {msg}")
+
+        try:
+            backfill_id: str = backfill_result["backfillId"]
+        except (KeyError, TypeError) as exc:
+            raise DagsterGatewayError(
+                "launchPartitionBackfill succeeded but backfillId was absent in response"
+            ) from exc
+
+        if not backfill_id:
+            raise DagsterGatewayError("Dagster returned an empty backfillId")
+
+        return backfill_id
+
+    async def launch_attr_quality_backfill(self, partition_keys: list[str]) -> str:
+        """Launch an asset backfill for attr_quality over the given partition keys (F-027).
+
+        Executes the `launchPartitionBackfill` GraphQL mutation. The backfill
+        enqueues one per-partition Dagster run per key in `partition_keys`.
+        The attr_quality asset performs a column-mode update on existing
+        producer_asset='chunks' rows — no new rows created.
+
+        Args:
+            partition_keys: List of partition keys in "src_{id}" format.
+
+        Returns:
+            The backfillId (string) from LaunchBackfillSuccess.
+
+        Raises DagsterGatewayError for ALL of the following:
+        - httpx network error (ConnectError, TimeoutException, etc.) → 503 from route
+        - HTTP response status is not 2xx → 503 from route
+        - Response body is not valid JSON → 503 from route
+        - Top-level "errors" key present (GraphQL server-side error) → 503 from route
+        - __typename not "LaunchBackfillSuccess" (e.g. PythonError, UnauthorizedError,
+          PartitionSetNotFoundError, PartitionKeysNotFoundError, InvalidSubsetError,
+          RunConflict) → 503 from route
+        - backfillId absent or empty → 503 from route
+        """
+        payload = {
+            "query": _LAUNCH_ATTR_QUALITY_BACKFILL_MUTATION,
+            "variables": {
+                "backfillParams": {
+                    "assetSelection": [{"path": ["attr_quality"]}],
+                    "partitionNames": partition_keys,
+                    "title": "F-027 attr_quality",
                 }
             },
         }
