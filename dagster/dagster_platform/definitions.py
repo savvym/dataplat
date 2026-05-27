@@ -10,6 +10,11 @@
 # F-025: chunks — real asset body: reads DoclingDocument, splits into ≤512-token
 #        fixed-size chunks, writes rows to Lance 'chunks' table. Uses helpers
 #        from chunker.py.
+# F-026: LanceChunksIOManager — delegates all Lance writes for the chunks asset
+#        to the IO manager (delete-before-insert idempotency). chunks asset now
+#        returns list[dict] instead of MaterializeResult.
+
+from typing import Any
 
 from dagster import (
     AssetExecutionContext,
@@ -22,6 +27,8 @@ from dagster import (
     job,
     op,
 )
+
+from dagster_platform.lance_io_manager import LanceChunksIOManager
 
 from dagster_platform.extractor import (
     build_docling_document,
@@ -37,7 +44,6 @@ from dagster_platform.chunker import (
     fixed_size_chunk,
     lookup_source_collection_id,
     read_docling_document,
-    write_chunks_to_lance,
 )
 
 # F-012: Dynamic partition definition for source uploads.
@@ -123,24 +129,26 @@ def extract_mineru(context: AssetExecutionContext) -> MaterializeResult:
 
 @asset(
     partitions_def=sources_partitions,
+    io_manager_key="lance_chunks_io",
     description=(
-        "Chunking (F-025): reads DoclingDocument from MinIO, splits text into "
+        "Chunking (F-025/F-026): reads DoclingDocument from MinIO, splits text into "
         "≤512-token fixed-size chunks using tiktoken cl100k_base, writes rows "
-        "to the Lance 'chunks' table at s3://{MINIO_LANCE_BUCKET}/chunks."
+        "to the Lance 'chunks' table at s3://{MINIO_LANCE_BUCKET}/chunks via "
+        "LanceChunksIOManager (delete-before-insert idempotency)."
     ),
 )
-def chunks(context: AssetExecutionContext) -> MaterializeResult:
-    """Real chunking asset (F-025).
+def chunks(context: AssetExecutionContext) -> list[dict[str, Any]]:
+    """Real chunking asset (F-025 / F-026 IO manager refactor).
 
-    Steps (agreed.md §3):
+    Steps (agreed.md §3 / F-026 agreed.md D9):
       1. Parse source_id from partition key.
       2. Look up source_collection_id from Postgres.
       3. Build boto3 S3 client from MINIO_* env.
       4. Read DoclingDocument JSON from s3://documents/{source_id}/extract_mineru/doc.docling.json.
       5. Extract plain text (fallback chain: markdown → doc.name → f"source_{source_id}").
       6. Split into ≤512-token fixed-size chunks (tiktoken cl100k_base).
-      7. Write chunk rows to Lance 'chunks' table (idempotent: delete then insert).
-      8. Return MaterializeResult with metadata (source_id, chunk_count, text_length).
+      7. Record asset-level metadata via context.add_output_metadata().
+      8. Return rows — LanceChunksIOManager handles the Lance write (idempotent).
     """
     partition_key = context.partition_key
     source_id = int(partition_key.removeprefix("src_"))
@@ -164,16 +172,16 @@ def chunks(context: AssetExecutionContext) -> MaterializeResult:
     rows = fixed_size_chunk(text, source_id=source_id, collection_id=collection_id)
     context.log.info("chunks: produced %d chunk(s)", len(rows))
 
-    write_chunks_to_lance(rows)
-    context.log.info("chunks: wrote %d rows to Lance chunks table", len(rows))
-
-    return MaterializeResult(
-        metadata={
+    # Asset-level metadata (D9: moves from MaterializeResult to add_output_metadata).
+    # IO-level metadata (row_count, mode) is added by LanceChunksIOManager.handle_output().
+    context.add_output_metadata(
+        {
             "source_id": MetadataValue.int(source_id),
             "chunk_count": MetadataValue.int(len(rows)),
             "text_length": MetadataValue.int(len(text)),
         }
     )
+    return rows
 
 
 @op
@@ -197,4 +205,5 @@ def hello_world_job() -> None:
 defs = Definitions(
     jobs=[hello_world_job],
     assets=[source_asset, extract_mineru, chunks],
+    resources={"lance_chunks_io": LanceChunksIOManager()},
 )

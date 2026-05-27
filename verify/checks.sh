@@ -2057,6 +2057,128 @@ for row in rows:
 print(f'  V4 OK: {len(rows)} rows have producer_asset=chunks, augmented_from=None, attr_*=None')
 sys.exit(0)
 " || { echo "FAIL: chunks V4 metadata check failed"; exit 1; }
+
+    echo "--- chunks V5: idempotency — re-run does not double row count ---"
+    # C2 fix: dedicated count-only Python snippet (prints integer, not human-readable string).
+    CH_COUNT1=$(docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${CH_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os
+src_id = int(os.environ['SRC_ID'])
+db = lancedb.connect(
+    's3://lance/chunks',
+    storage_options={
+        'aws_access_key_id': os.environ['S3_USER'],
+        'aws_secret_access_key': os.environ['S3_PASS'],
+        'endpoint': 'http://minio:9000',
+        'aws_region': 'us-east-1',
+        'allow_http': 'true',
+    })
+t = db.open_table('chunks')
+n = t.count_rows(f'source_id = {src_id} AND producer_asset = \'chunks\'')
+print(n)
+" 2>/dev/null)
+    echo "  V5: row count after first run = $CH_COUNT1"
+
+    # Trigger a second backfill of the same chunks partition.
+    CH_RUN2_BODY=$(mktemp)
+    CH_RUN2_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $CH_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"chunks\", \"source_ids\": [${CH_SRC_ID}]}" \
+      -w '%{http_code}' -o "$CH_RUN2_BODY")
+    test "$CH_RUN2_STATUS" = "202" \
+      || { echo "FAIL: chunks V5 second backfill returned $CH_RUN2_STATUS: $(cat "$CH_RUN2_BODY")"; rm -f "$CH_RUN2_BODY"; exit 1; }
+    CH_BACKFILL2_ID=$(python3 -c "import json; print(json.load(open('$CH_RUN2_BODY'))['dagster_run_id'])")
+    rm -f "$CH_RUN2_BODY"
+    echo "  V5: second chunks backfill launched: id=$CH_BACKFILL2_ID"
+
+    echo "--- chunks V5: poll second chunks backfill to COMPLETED_SUCCESS (<=120s) ---"
+    CH_BF2_STATUS="UNKNOWN"
+    for i in $(seq 1 40); do
+      CH_BF2_STATUS=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+        python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill { status }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$CH_BACKFILL2_ID'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+print(result.get('status', result.get('message', 'UNKNOWN')))
+" 2>&1 | tail -1)
+      echo "  [$i/40] second chunks backfill status: $CH_BF2_STATUS"
+      case "$CH_BF2_STATUS" in
+        COMPLETED_SUCCESS) break ;;
+        COMPLETED_FAILED|CANCELED|*FAIL*)
+          echo "FAIL: second chunks backfill reached terminal non-success state: $CH_BF2_STATUS"; exit 1 ;;
+      esac
+      sleep 3
+    done
+    test "$CH_BF2_STATUS" = "COMPLETED_SUCCESS" \
+      || { echo "FAIL: timeout waiting for second chunks COMPLETED_SUCCESS (last status=$CH_BF2_STATUS)"; exit 1; }
+
+    # Capture count after second run (same dedicated snippet).
+    CH_COUNT2=$(docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${CH_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os
+src_id = int(os.environ['SRC_ID'])
+db = lancedb.connect(
+    's3://lance/chunks',
+    storage_options={
+        'aws_access_key_id': os.environ['S3_USER'],
+        'aws_secret_access_key': os.environ['S3_PASS'],
+        'endpoint': 'http://minio:9000',
+        'aws_region': 'us-east-1',
+        'allow_http': 'true',
+    })
+t = db.open_table('chunks')
+n = t.count_rows(f'source_id = {src_id} AND producer_asset = \'chunks\'')
+print(n)
+" 2>/dev/null)
+    echo "  V5: row count after second run = $CH_COUNT2"
+    [ "$CH_COUNT2" -eq "$CH_COUNT1" ] \
+      || { echo "FAIL V5: row count changed from $CH_COUNT1 to $CH_COUNT2 (expected no change — idempotency broken)"; exit 1; }
+    echo "  V5 OK: idempotent row count $CH_COUNT1 == $CH_COUNT2"
+
+    echo "--- chunks V6: no duplicate chunk_ids for source ---"
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${CH_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os, sys
+src_id = int(os.environ['SRC_ID'])
+db = lancedb.connect(
+    's3://lance/chunks',
+    storage_options={
+        'aws_access_key_id': os.environ['S3_USER'],
+        'aws_secret_access_key': os.environ['S3_PASS'],
+        'endpoint': 'http://minio:9000',
+        'aws_region': 'us-east-1',
+        'allow_http': 'true',
+    })
+t = db.open_table('chunks')
+rows = t.search().where(f'source_id = {src_id} AND producer_asset = \'chunks\'') \
+    .select(['chunk_id']).to_list()
+ids = [r['chunk_id'] for r in rows]
+assert len(ids) == len(set(ids)), f'duplicate chunk_ids: {len(ids)} rows, {len(set(ids))} unique'
+print(f'  V6 OK: {len(ids)} chunk_ids, all unique')
+sys.exit(0)
+" || { echo "FAIL V6: duplicate chunk_ids detected"; exit 1; }
     ;;
   *)
     echo "Unknown layer: $LAYER" >&2

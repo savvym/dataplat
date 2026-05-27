@@ -214,6 +214,10 @@ def fixed_size_chunk(
 def write_chunks_to_lance(rows: list[dict[str, Any]]) -> None:
     """Write chunk rows to the Lance chunks table (idempotent, agreed.md D5).
 
+    Superseded by LanceChunksIOManager (F-026, sprint S026-F-026).
+    Retained here because it is unit-tested in tests/test_chunker.py.
+    The chunks asset no longer calls this function directly.
+
     Connects to s3://{MINIO_LANCE_BUCKET}/chunks — same URI pattern as
     apps/api/dataplat_api/storage/lance.py but reads from os.environ.
     Steps:
