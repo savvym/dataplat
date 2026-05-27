@@ -26,6 +26,9 @@ WORKDIR /app
 # via `python -m pytest` in the checks.sh extract) layer — not otherwise in this image).
 # F-025: lancedb (Lance vector table), pyarrow (Arrow schema + record batches),
 # tiktoken (cl100k_base BPE tokeniser for fixed-size chunking).
+# F-029: fasttext-langdetect (language detection, fasttext lid.176.ftz model via
+# fasttext-predict C extension; original pin 1.0.6 unavailable — using 1.1.1,
+# module import changed from fasttext_langdetect to ftlangdetect in 1.1.1).
 RUN pip install --no-cache-dir \
     dagster==1.11.16 \
     dagster-webserver==1.11.16 \
@@ -36,7 +39,8 @@ RUN pip install --no-cache-dir \
     lancedb==0.30.2 \
     pyarrow==24.0.0 \
     tiktoken==0.7.0 \
-    pytest==8.3.4
+    pytest==8.3.4 \
+    fasttext-langdetect==1.1.1
 
 # Copy the entire dagster/ directory from the repo root into the image.
 # After this COPY:
@@ -49,6 +53,13 @@ COPY dagster/ /app/dagster/
 # the encoder loads instantly at runtime without fetching from the internet
 # (R4 mitigation in agreed.md — air-gapped / slow-network environments).
 RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
+
+# F-029: bake fasttext lid.176.ftz model into the image (avoids runtime download).
+# Uses low_memory=True to select the compressed lid.176.ftz model (~900KB).
+# FTLANG_CACHE set to /app/fasttext-models so the cached model persists in the
+# image layer and is available at runtime without a network call.
+ENV FTLANG_CACHE=/app/fasttext-models
+RUN python -c "from ftlangdetect import detect; detect('hello world', low_memory=True)"
 
 # PYTHONPATH: lets Python find dagster_platform.definitions
 ENV PYTHONPATH=/app/dagster

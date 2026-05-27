@@ -53,12 +53,13 @@ class RunCreate(BaseModel):
                - "extract_mineru" (F-018): run MinerU PDF extraction.
                - "chunks" (F-024): run chunking on extracted documents.
                - "attr_quality" (F-027): run quality tagger (length-heuristic stub).
+               - "attr_lang" (F-029): run lang_fasttext tagger.
                Pydantic v2 raises ValidationError for any other value → FastAPI 422.
         source_ids: Non-empty list of source IDs to process.
                     min_length=1 enforces non-empty at the schema level → FastAPI 422.
     """
 
-    asset: Literal["extract_mineru", "chunks", "attr_quality"]
+    asset: Literal["extract_mineru", "chunks", "attr_quality", "attr_lang"]
     source_ids: Annotated[list[int], Field(min_length=1)]
 
     model_config = ConfigDict(extra="ignore")

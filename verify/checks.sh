@@ -1338,6 +1338,7 @@ print('  F017-V1 OK: id=%d name=%s config_schema.type=%s output_schema=%s defaul
     bash "$0" lance       # F-023
     bash "$0" chunks      # F-025
     bash "$0" attr_quality  # F-027
+    bash "$0" attr_lang     # F-029
     ;;
   lance)
     # F-023: Lance global chunks table schema initialisation.
@@ -2564,6 +2565,356 @@ print(t.count_rows(f\"source_id = {int(os.environ['SRC_ID'])} AND producer_asset
     test "$AQ_RC_BEFORE" = "$AQ_RC_AFTER" \
       || { echo "FAIL V4: row count changed $AQ_RC_BEFORE → $AQ_RC_AFTER (rows were inserted)"; exit 1; }
     echo "  V4 OK: row count unchanged at $AQ_RC_AFTER after second run"
+    ;;
+  attr_lang)
+    # F-029: attr_lang asset — language detection via fasttext lid.176.ftz.
+    # attr_lang_code is an ISO 639-1 (or 639-2/3) code string.
+    # attr_lang_confidence is a float in [0.0, 1.0].
+    COMPOSE="docker/docker-compose.dev.yml"
+    [[ -f "$COMPOSE" ]] || { echo "no $COMPOSE yet"; exit 0; }
+
+    FASTAPI_HOST_PORT="${FASTAPI_HOST_PORT:-18000}"
+    DAGSTER_HOST_PORT="${DAGSTER_HOST_PORT:-13000}"
+    MINIO_USER="${MINIO_ROOT_USER:-minioadmin}"
+    MINIO_PASS="${MINIO_ROOT_PASSWORD:-devpassword}"
+
+    echo "--- attr_lang: unit tests for lang_tagger.py helpers ---"
+    docker compose -f "$COMPOSE" exec -T dagster-webserver \
+      python -m pytest /app/dagster/tests/test_lang_tagger.py -q || \
+      { echo "FAIL: attr_lang tagger unit tests failed"; exit 1; }
+
+    echo "--- attr_lang: mint Bearer token ---"
+    AL_TOKEN_BODY=$(mktemp)
+    AL_TOKEN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/auth/token" \
+      -d "username=admin@example.com&password=testpassword123" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -w '%{http_code}' -o "$AL_TOKEN_BODY")
+    test "$AL_TOKEN_STATUS" = "200" \
+      || { echo "FAIL: attr_lang) could not mint token (status $AL_TOKEN_STATUS) — run 'bash $0 auth' first"; rm -f "$AL_TOKEN_BODY"; exit 1; }
+    AL_TOKEN=$(python3 -c "import json; print(json.load(open('$AL_TOKEN_BODY'))['access_token'])")
+    rm -f "$AL_TOKEN_BODY"
+
+    echo "--- attr_lang: create collection ---"
+    AL_COLL_BODY=$(mktemp)
+    AL_COLL_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/collections" \
+      -H "Authorization: Bearer $AL_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"name": "test-attr-lang-f029", "dataset_card_md": "F029 attr_lang fasttext tagger test collection"}' \
+      -w '%{http_code}' -o "$AL_COLL_BODY")
+    if test "$AL_COLL_STATUS" = "409"; then
+      AL_COLL_ID=$(docker compose -f "$COMPOSE" exec -T postgres \
+        psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+          "SELECT id FROM source_collection WHERE name='test-attr-lang-f029' LIMIT 1" \
+        | tr -d '[:space:]')
+    else
+      test "$AL_COLL_STATUS" = "201" \
+        || { echo "FAIL: attr_lang) collection create returned $AL_COLL_STATUS: $(cat "$AL_COLL_BODY")"; rm -f "$AL_COLL_BODY"; exit 1; }
+      AL_COLL_ID=$(python3 -c "import json; print(json.load(open('$AL_COLL_BODY'))['id'])")
+    fi
+    rm -f "$AL_COLL_BODY"
+    echo "  collection id=$AL_COLL_ID"
+
+    echo "--- attr_lang: upload source PDF ---"
+    AL_PDF=$(mktemp /tmp/f029-XXXXXX.pdf)
+    python3 -c "
+pdf = (b'%PDF-1.4\n1 0 obj<</Type /Catalog /Pages 2 0 R>>endobj\n'
+       b'2 0 obj<</Type /Pages /Kids[3 0 R] /Count 1>>endobj\n'
+       b'3 0 obj<</Type /Page /MediaBox[0 0 612 792] /Parent 2 0 R>>endobj\n'
+       b'xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n'
+       b'0000000058 00000 n \n0000000115 00000 n \n'
+       b'trailer<</Size 4 /Root 1 0 R>>\nstartxref\n182\n%%EOF\n')
+open('$AL_PDF', 'wb').write(pdf)
+"
+    AL_UP_BODY=$(mktemp)
+    AL_UP_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/upload" \
+      -H "Authorization: Bearer $AL_TOKEN" \
+      -F "file=@${AL_PDF};type=application/pdf" \
+      -F "collection_id=${AL_COLL_ID}" \
+      -w '%{http_code}' -o "$AL_UP_BODY")
+    rm -f "$AL_PDF"
+    test "$AL_UP_STATUS" = "201" \
+      || { echo "FAIL: attr_lang) upload returned $AL_UP_STATUS: $(cat "$AL_UP_BODY")"; rm -f "$AL_UP_BODY"; exit 1; }
+    AL_SRC_ID=$(python3 -c "import json; print(json.load(open('$AL_UP_BODY'))['id'])")
+    rm -f "$AL_UP_BODY"
+    echo "  uploaded source id=$AL_SRC_ID"
+
+    echo "--- attr_lang: prerequisite — POST /api/runs extract_mineru ---"
+    AL_EX_RUN_BODY=$(mktemp)
+    AL_EX_RUN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $AL_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"extract_mineru\", \"source_ids\": [${AL_SRC_ID}]}" \
+      -w '%{http_code}' -o "$AL_EX_RUN_BODY")
+    test "$AL_EX_RUN_STATUS" = "202" \
+      || { echo "FAIL: attr_lang) POST extract_mineru returned $AL_EX_RUN_STATUS: $(cat "$AL_EX_RUN_BODY")"; rm -f "$AL_EX_RUN_BODY"; exit 1; }
+    AL_EX_BACKFILL_ID=$(python3 -c "import json; print(json.load(open('$AL_EX_RUN_BODY'))['dagster_run_id'])")
+    rm -f "$AL_EX_RUN_BODY"
+    echo "  extract_mineru backfill launched: id=$AL_EX_BACKFILL_ID"
+
+    echo "--- attr_lang: poll extract_mineru to COMPLETED_SUCCESS (<=120s) ---"
+    AL_EX_BF_STATUS="UNKNOWN"
+    for i in $(seq 1 40); do
+      AL_EX_BF_STATUS=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+        python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill { status }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$AL_EX_BACKFILL_ID'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+print(result.get('status', result.get('message', 'UNKNOWN')))
+" 2>&1 | tail -1)
+      echo "  [$i/40] extract_mineru backfill status: $AL_EX_BF_STATUS"
+      case "$AL_EX_BF_STATUS" in
+        COMPLETED_SUCCESS) break ;;
+        COMPLETED_FAILED|CANCELED|*FAIL*)
+          echo "FAIL: extract_mineru backfill reached terminal non-success state: $AL_EX_BF_STATUS"; exit 1 ;;
+      esac
+      sleep 3
+    done
+    test "$AL_EX_BF_STATUS" = "COMPLETED_SUCCESS" \
+      || { echo "FAIL: timeout waiting for extract_mineru COMPLETED_SUCCESS (last status=$AL_EX_BF_STATUS)"; exit 1; }
+    echo "  extract_mineru COMPLETED_SUCCESS"
+
+    echo "--- attr_lang: prerequisite — POST /api/runs chunks ---"
+    AL_CH_RUN_BODY=$(mktemp)
+    AL_CH_RUN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $AL_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"chunks\", \"source_ids\": [${AL_SRC_ID}]}" \
+      -w '%{http_code}' -o "$AL_CH_RUN_BODY")
+    test "$AL_CH_RUN_STATUS" = "202" \
+      || { echo "FAIL: attr_lang) POST chunks returned $AL_CH_RUN_STATUS: $(cat "$AL_CH_RUN_BODY")"; rm -f "$AL_CH_RUN_BODY"; exit 1; }
+    AL_CH_BACKFILL_ID=$(python3 -c "import json; print(json.load(open('$AL_CH_RUN_BODY'))['dagster_run_id'])")
+    rm -f "$AL_CH_RUN_BODY"
+    echo "  chunks backfill launched: id=$AL_CH_BACKFILL_ID"
+
+    echo "--- attr_lang: poll chunks to COMPLETED_SUCCESS (<=120s) ---"
+    AL_CH_BF_STATUS="UNKNOWN"
+    for i in $(seq 1 40); do
+      AL_CH_BF_STATUS=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+        python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill { status }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$AL_CH_BACKFILL_ID'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+print(result.get('status', result.get('message', 'UNKNOWN')))
+" 2>&1 | tail -1)
+      echo "  [$i/40] chunks backfill status: $AL_CH_BF_STATUS"
+      case "$AL_CH_BF_STATUS" in
+        COMPLETED_SUCCESS) break ;;
+        COMPLETED_FAILED|CANCELED|*FAIL*)
+          echo "FAIL: chunks backfill reached terminal non-success state: $AL_CH_BF_STATUS"; exit 1 ;;
+      esac
+      sleep 3
+    done
+    test "$AL_CH_BF_STATUS" = "COMPLETED_SUCCESS" \
+      || { echo "FAIL: timeout waiting for chunks COMPLETED_SUCCESS (last status=$AL_CH_BF_STATUS)"; exit 1; }
+    echo "  chunks COMPLETED_SUCCESS"
+
+    # Capture row count BEFORE attr_lang (used for V3 idempotency check)
+    AL_RC_BEFORE=$(docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${AL_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os
+db = lancedb.connect('s3://lance/chunks', storage_options={
+    'aws_access_key_id': os.environ['S3_USER'],
+    'aws_secret_access_key': os.environ['S3_PASS'],
+    'endpoint': 'http://minio:9000', 'aws_region': 'us-east-1', 'allow_http': 'true'})
+t = db.open_table('chunks')
+print(t.count_rows(f\"source_id = {int(os.environ['SRC_ID'])} AND producer_asset = 'chunks'\"))
+" | tr -d '[:space:]')
+
+    echo "--- attr_lang: V1 — POST /api/runs attr_lang returns 202 ---"
+    AL_RUN_BODY=$(mktemp)
+    AL_RUN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $AL_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"attr_lang\", \"source_ids\": [${AL_SRC_ID}]}" \
+      -w '%{http_code}' -o "$AL_RUN_BODY")
+    test "$AL_RUN_STATUS" = "202" \
+      || { echo "FAIL: attr_lang V1 POST /api/runs returned $AL_RUN_STATUS: $(cat "$AL_RUN_BODY")"; rm -f "$AL_RUN_BODY"; exit 1; }
+    AL_BACKFILL_ID=$(python3 -c "import json; print(json.load(open('$AL_RUN_BODY'))['dagster_run_id'])")
+    rm -f "$AL_RUN_BODY"
+    echo "  V1 OK: attr_lang backfill launched: id=$AL_BACKFILL_ID"
+
+    echo "--- attr_lang: poll attr_lang backfill to COMPLETED_SUCCESS (<=120s) ---"
+    AL_BF_STATUS="UNKNOWN"
+    for i in $(seq 1 40); do
+      AL_BF_STATUS=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+        python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill { status }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$AL_BACKFILL_ID'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+print(result.get('status', result.get('message', 'UNKNOWN')))
+" 2>&1 | tail -1)
+      echo "  [$i/40] attr_lang backfill status: $AL_BF_STATUS"
+      case "$AL_BF_STATUS" in
+        COMPLETED_SUCCESS) break ;;
+        COMPLETED_FAILED|CANCELED|*FAIL*)
+          echo "FAIL: attr_lang backfill reached terminal non-success state: $AL_BF_STATUS"; exit 1 ;;
+      esac
+      sleep 3
+    done
+    test "$AL_BF_STATUS" = "COMPLETED_SUCCESS" \
+      || { echo "FAIL: timeout waiting for attr_lang COMPLETED_SUCCESS (last status=$AL_BF_STATUS)"; exit 1; }
+    echo "  attr_lang COMPLETED_SUCCESS"
+
+    echo "--- attr_lang: V1 — non-null ISO 639-1/2/3 codes for all rows ---"
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${AL_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os
+src_id = int(os.environ['SRC_ID'])
+db = lancedb.connect('s3://lance/chunks', storage_options={
+    'aws_access_key_id': os.environ['S3_USER'],
+    'aws_secret_access_key': os.environ['S3_PASS'],
+    'endpoint': 'http://minio:9000', 'aws_region': 'us-east-1', 'allow_http': 'true'})
+t = db.open_table('chunks')
+rows = t.search().where(
+    f\"source_id = {src_id} AND producer_asset = 'chunks'\").select(
+    ['attr_lang_code']).to_list()
+assert len(rows) > 0, f'no rows found for source_id={src_id}'
+for r in rows:
+    code = r['attr_lang_code']
+    assert code is not None and 2 <= len(code) <= 3, f'Invalid lang code: {code!r}'
+print(f'  V1 OK: {len(rows)} rows, all have non-null ISO 639-1/2/3 codes')
+" || { echo "FAIL: attr_lang V1 lang code check failed"; exit 1; }
+
+    echo "--- attr_lang: V2 — attr_lang_confidence in [0.0, 1.0] for all rows ---"
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${AL_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os
+src_id = int(os.environ['SRC_ID'])
+db = lancedb.connect('s3://lance/chunks', storage_options={
+    'aws_access_key_id': os.environ['S3_USER'],
+    'aws_secret_access_key': os.environ['S3_PASS'],
+    'endpoint': 'http://minio:9000', 'aws_region': 'us-east-1', 'allow_http': 'true'})
+t = db.open_table('chunks')
+rows = t.search().where(
+    f\"source_id = {src_id} AND producer_asset = 'chunks'\").select(
+    ['attr_lang_confidence']).to_list()
+assert len(rows) > 0, 'no rows found'
+bad = [r for r in rows if r['attr_lang_confidence'] is None or not (0.0 <= r['attr_lang_confidence'] <= 1.0)]
+assert not bad, f'FAIL V2: {len(bad)} rows have out-of-range confidence'
+print(f'  V2 OK: all {len(rows)} confidence values in [0.0, 1.0]')
+" || { echo "FAIL: attr_lang V2 confidence range check failed"; exit 1; }
+
+    echo "--- attr_lang: V3 — no new rows: count before == count after ---"
+    # Re-trigger attr_lang backfill
+    AL_RUN2_BODY=$(mktemp)
+    AL_RUN2_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $AL_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"attr_lang\", \"source_ids\": [${AL_SRC_ID}]}" \
+      -w '%{http_code}' -o "$AL_RUN2_BODY")
+    test "$AL_RUN2_STATUS" = "202" \
+      || { echo "FAIL V3: second run POST returned $AL_RUN2_STATUS"; rm -f "$AL_RUN2_BODY"; exit 1; }
+    AL_BACKFILL_ID2=$(python3 -c "import json; print(json.load(open('$AL_RUN2_BODY'))['dagster_run_id'])")
+    rm -f "$AL_RUN2_BODY"
+    echo "  V3: second attr_lang backfill launched: id=$AL_BACKFILL_ID2"
+
+    # Poll second run to COMPLETED_SUCCESS
+    AL_BF2_STATUS="UNKNOWN"
+    for i in $(seq 1 40); do
+      AL_BF2_STATUS=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+        python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill { status }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$AL_BACKFILL_ID2'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+print(result.get('status', result.get('message', 'UNKNOWN')))
+" 2>&1 | tail -1)
+      echo "  [$i/40] V3 second backfill status: $AL_BF2_STATUS"
+      case "$AL_BF2_STATUS" in
+        COMPLETED_SUCCESS) break ;;
+        COMPLETED_FAILED|CANCELED|*FAIL*)
+          echo "FAIL V3: second run reached terminal non-success: $AL_BF2_STATUS"; exit 1 ;;
+      esac
+      sleep 3
+    done
+    test "$AL_BF2_STATUS" = "COMPLETED_SUCCESS" \
+      || { echo "FAIL V3: timeout waiting for second run COMPLETED_SUCCESS (last=$AL_BF2_STATUS)"; exit 1; }
+
+    # Assert row count unchanged after second run
+    AL_RC_AFTER=$(docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${AL_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os
+db = lancedb.connect('s3://lance/chunks', storage_options={
+    'aws_access_key_id': os.environ['S3_USER'],
+    'aws_secret_access_key': os.environ['S3_PASS'],
+    'endpoint': 'http://minio:9000', 'aws_region': 'us-east-1', 'allow_http': 'true'})
+t = db.open_table('chunks')
+print(t.count_rows(f\"source_id = {int(os.environ['SRC_ID'])} AND producer_asset = 'chunks'\"))
+" | tr -d '[:space:]')
+
+    test "$AL_RC_BEFORE" = "$AL_RC_AFTER" \
+      || { echo "FAIL V3: row count changed $AL_RC_BEFORE → $AL_RC_AFTER (rows were inserted)"; exit 1; }
+    echo "  V3 OK: row count unchanged at $AL_RC_AFTER after second run"
     ;;
   *)
     echo "Unknown layer: $LAYER" >&2
