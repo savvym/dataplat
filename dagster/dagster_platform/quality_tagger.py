@@ -186,9 +186,12 @@ def _llm_update(
     Zero new rows created; all other columns are untouched.
 
     Uses table.update(where=..., values=...) rather than merge_insert because
-    merge_insert's when_matched_update_all() replaces the entire row — we only
-    want a column-mode partial update (agreed.md D3: taggers must NOT touch
-    lineage fields such as augmented_from, augmenter_id, etc.).
+    lancedb 0.30.2 does not support when_matched_update_all(updates=[...]) —
+    the `updates=` kwarg does not exist, and bare when_matched_update_all()
+    replaces the entire row (destroying lineage fields). The per-row
+    table.update(where=..., values=...) achieves column-mode partial update
+    correctly: only attr_quality_score and attr_quality_provider are touched.
+    (Amendment to agreed.md D6 item 5; see contracts/S028-F-028/review-final.md H1.)
 
     Args:
         table:        An open lancedb Table object.

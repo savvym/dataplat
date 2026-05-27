@@ -2199,7 +2199,10 @@ sys.exit(0)
       { echo "FAIL: attr_quality tagger unit tests failed"; exit 1; }
 
     echo "--- attr_quality: unit tests for LLM gateway helpers ---"
-    # Run on host via uv (pytest is a dev-only dep, not in the production container image).
+    # Run on host via uv because pytest is a dev-only dep (not in the production
+    # container image). This is a documented deviation from agreed.md D11 item 2
+    # (which specified docker compose exec). The host venv uses the same lock file
+    # and anthropic SDK version, so the test environment matches.
     ( cd apps/api && uv run pytest tests/test_llm_gateway.py -q ) || \
       { echo "FAIL: attr_quality gateway unit tests failed"; exit 1; }
 

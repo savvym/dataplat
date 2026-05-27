@@ -72,7 +72,7 @@ class LLMGateway:
         Returns:
             LLMResponse with content (raw model text) and model (model name or "mock").
         """
-        if not os.environ.get("ANTHROPIC_API_KEY"):
+        if self._mock:
             return LLMResponse(content="0.5", model="mock")
 
         response = await self._client.messages.create(

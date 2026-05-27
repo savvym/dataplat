@@ -266,7 +266,10 @@ Respond with ONLY a single decimal number between 0.0 and 1.0. No explanation.
    - Change `select(["chunk_id", "token_count"])` → `select(["chunk_id", "text"])`.
    - Call `score_chunks_via_gateway([r["text"] for r in rows])` to get `(score, provider)` per row.
    - Resulting `scored` list: `[{"chunk_id": r["chunk_id"], "attr_quality_score": score, "attr_quality_provider": provider}]`.
-   - `merge_insert("chunk_id").when_matched_update_all(updates=["attr_quality_score", "attr_quality_provider"]).execute(scored)`.
+   - **AMENDMENT (Mode B H1):** lancedb 0.30.2 does not support `when_matched_update_all(updates=[...])`
+     — the `updates=` kwarg does not exist, and bare `when_matched_update_all()` replaces the
+     entire row (destroying lineage fields). Use `table.update(where=f"chunk_id = '{id}'", values={...})`
+     per row instead. This achieves the same column-mode partial update correctly.
 
 6. **`update_quality_scores_in_lance()`** becomes simpler — no try/except for Option A:
    ```python
@@ -396,7 +399,7 @@ All tests use `pytest` and `unittest.mock` / `pytest-mock`. No real network call
 | `test_score_via_gateway_parse_error` | Gateway returns `"error: ..."` → score=0.0, provider="error" (no exception raised) |
 | `test_score_via_gateway_request_exception` | `requests.post` raises `requests.RequestException` → score=0.0, provider="error" per chunk |
 | `test_gateway_url_from_env` | `LLM_GATEWAY_URL="http://custom:8000"` is used in POST URL |
-| `test_llm_update_calls_merge_insert` | Mock `table.merge_insert(...).when_matched_update_all(...).execute(data)` chain; assert called with `"chunk_id"` key and `["attr_quality_score", "attr_quality_provider"]` columns (HIGH 3 fix) |
+| `test_llm_update_calls_update` | Mock `table.update(where=..., values=...)` call chain; assert called with correct chunk_id where clause and `{"attr_quality_score": ..., "attr_quality_provider": ...}` values dict (HIGH 3 fix; AMENDED: renamed from `test_llm_update_calls_merge_insert` due to lancedb 0.30.2 API limitation) |
 | `test_update_quality_scores_no_new_rows` | Mock Lance `open_table` + `search().where().select().to_list()` returning 2 rows; mock `requests.post`; call `update_quality_scores_in_lance(src_id=42)`; assert `count_rows()` is called and no insert path triggered (HIGH 3 fix) |
 
 All tests use `unittest.mock.patch("requests.post", ...)` and mock Lance table objects.
