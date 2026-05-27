@@ -1,60 +1,59 @@
-"""quality_tagger.py — Pure helpers for the attr_quality Dagster asset (F-027).
+"""quality_tagger.py — Pure helpers for the attr_quality Dagster asset (F-028).
 
 All functions are side-effect-free where possible, or have clearly bounded I/O.
 Keeping these out of definitions.py makes unit-testing straightforward.
 
-Design notes (agreed.md §3 D1–D4):
-- No Dagster imports — same no-Dagster guarantee as chunker.py. This allows
-  fast unit tests without a Dagster runtime.
-- Stub scorer: score = min(1.0, float(token_count) / 512.0), provider = "length_heuristic".
-  F-028 will replace this with real LLM scoring once the gateway is built.
+Design notes (agreed.md §3 D6, F-028):
+- No Dagster imports — same no-Dagster guarantee as chunker.py and extractor.py.
+  This allows fast unit tests without a Dagster runtime.
+- No direct LLM SDK imports (hard invariant #4 — CLAUDE.md §"Hard invariants").
+  LLM scoring is done by calling the internal FastAPI gateway via requests.post.
+  Only apps/api/dataplat_api/llm/gateway.py may import anthropic.
+- Two-layer architecture (agreed.md D-A):
+    Dagster tagger → POST /api/internal/llm/completions → LLMGateway → Anthropic SDK
 - Column-mode update: ZERO new rows. Updates attr_quality_score and
   attr_quality_provider columns on existing producer_asset='chunks' rows only.
   Does NOT modify lineage fields (augmented_from, augmenter_id, etc.) — taggers
   are NOT augmenters (agreed.md D3).
-- DB access via raw lancedb (already in the Dagster image). Reads MINIO_* from
-  os.environ (same pattern as chunker.py).
+- DB access via raw lancedb (already in the Dagster image).
+- Reads LLM_GATEWAY_URL from os.environ (default "http://fastapi:8000").
+- Mock mode is transparent: when ANTHROPIC_API_KEY is absent in fastapi service,
+  the gateway returns content="0.5", model="mock" — quality_tagger.py just parses
+  whatever the gateway returns, with no special handling needed.
+- Per-chunk HTTP calls (agreed.md D-E): simple but potentially slow for large sources.
+  Dagster op timeout should be set generously (~5 min) for production use.
+  Batching deferred to a future feature.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 import lancedb  # type: ignore[import-untyped]
+import requests
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Constants
+# Scoring prompt (exact text per agreed.md D6 — do NOT modify)
 # ---------------------------------------------------------------------------
 
-QUALITY_PROVIDER = "length_heuristic"
-
-# ---------------------------------------------------------------------------
-# Stub scorer
-# ---------------------------------------------------------------------------
-
-
-def compute_quality_score(token_count: int) -> float:
-    """Length-heuristic quality score (F-027 stub).
-
-    Formula (agreed.md §1):
-        score = min(1.0, float(token_count) / 512.0)
-
-    F-028 will replace this with a real LLM-based scorer once the gateway
-    (apps/api/dataplat_api/llm/) exists. Until then this pure arithmetic stub
-    satisfies invariant #4 (no LLM SDK imports).
-
-    Args:
-        token_count: Number of BPE tokens in the chunk.
-
-    Returns:
-        A float in [0.0, 1.0].
-    """
-    return min(1.0, float(token_count) / 512.0)
+_SCORING_PROMPT = (
+    "Rate the quality of the following text chunk on a scale from 0.0 to 1.0,\n"
+    "where 1.0 is high-quality, coherent, informative text and 0.0 is garbled,\n"
+    "empty, or meaningless content.\n"
+    "\n"
+    "Text:\n"
+    "{chunk_text}\n"
+    "\n"
+    "Respond with ONLY a single decimal number between 0.0 and 1.0. No explanation."
+)
 
 
 # ---------------------------------------------------------------------------
-# Lance column-mode update helper
+# Lance storage helpers
 # ---------------------------------------------------------------------------
 
 
@@ -72,6 +71,70 @@ def _build_lance_storage_options() -> dict[str, str]:
     }
 
 
+# ---------------------------------------------------------------------------
+# LLM scoring via internal FastAPI gateway
+# ---------------------------------------------------------------------------
+
+
+def score_chunks_via_gateway(texts: list[str]) -> list[tuple[float, str]]:
+    """Score a list of chunk texts via the internal LLM gateway.
+
+    For each chunk text, POSTs the scoring prompt to the internal FastAPI
+    endpoint (POST /api/internal/llm/completions) via requests.post.
+    Parses the response JSON and clamps the score to [0.0, 1.0].
+
+    Uses requests (not httpx) — the Dagster image has requests as a transitive
+    dep of dagster itself; httpx is NOT reliably present in the Dagster virtualenv.
+    (agreed.md D-C)
+
+    Args:
+        texts: List of chunk texts to score (one HTTP call per text).
+
+    Returns:
+        List of (score, model_name) tuples, one per input text.
+        On request failure or parse error: (0.0, "error") for that chunk.
+        Errors are logged and do NOT abort the batch (agreed.md D6 item 3).
+    """
+    gateway_url = os.environ.get("LLM_GATEWAY_URL", "http://fastapi:8000")
+    endpoint = f"{gateway_url}/api/internal/llm/completions"
+
+    results: list[tuple[float, str]] = []
+    for text in texts:
+        prompt = _SCORING_PROMPT.format(chunk_text=text)
+        try:
+            resp = requests.post(
+                endpoint,
+                json={
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 16,
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            raw_score = float(data["content"])
+            score = max(0.0, min(1.0, raw_score))
+            provider: str = data["model"]
+            results.append((score, provider))
+        except requests.RequestException as exc:
+            logger.warning(
+                "score_chunks_via_gateway: HTTP request failed: %s", exc
+            )
+            results.append((0.0, "error"))
+        except (ValueError, KeyError, TypeError) as exc:
+            logger.warning(
+                "score_chunks_via_gateway: response parse failed: %s", exc
+            )
+            results.append((0.0, "error"))
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Lance column-mode update
+# ---------------------------------------------------------------------------
+
+
 def update_quality_scores_in_lance(source_id: int) -> int:
     """Update attr_quality_score and attr_quality_provider on existing chunk rows.
 
@@ -83,84 +146,75 @@ def update_quality_scores_in_lance(source_id: int) -> int:
 
     Idempotency: re-running overwrites the same two columns — no row count change.
 
-    Implementation tries Option A (table.update with values_sql — no Python
-    read-back) which is the simplest path. If values_sql is unavailable in the
-    installed lancedb version, falls back to Option B (read → compute → merge_insert).
+    F-028 change (vs F-027): reads chunk text from Lance → calls internal LLM
+    gateway per chunk → merge_insert updated scores. Option A (SQL values_sql) is
+    no longer viable because HTTP cannot be invoked from SQL (agreed.md D-D).
 
     Args:
         source_id: The source to process.
 
     Returns:
-        Number of rows updated (matched by the WHERE clause). Zero if no chunks
-        exist for this source_id (update is a no-op — caller logs a warning).
+        Number of rows matched by the WHERE clause (zero if no chunks exist —
+        caller logs a warning). Note: row count is checked AFTER the update
+        (not the number of HTTP calls made).
     """
     lance_bucket = os.environ.get("MINIO_LANCE_BUCKET", "lance")
     db_uri = f"s3://{lance_bucket}/chunks"
     storage_options = _build_lance_storage_options()
 
     db = lancedb.connect(db_uri, storage_options=storage_options)
-    # Open existing table — do NOT create; chunks must already exist (R2).
+    # Open existing table — do NOT create; chunks must already exist.
     table = db.open_table("chunks")
 
     where_clause = f"source_id = {source_id} AND producer_asset = 'chunks'"
+    _llm_update(table, source_id, where_clause)
 
-    # Option A: table.update() with values_sql — no Python read-back required.
-    # Tested against lancedb==0.30.2. If unavailable, falls back to Option B.
-    try:
-        table.update(
-            where=where_clause,
-            values_sql={
-                "attr_quality_score": "LEAST(1.0, CAST(token_count AS FLOAT) / 512.0)",
-                "attr_quality_provider": f"'{QUALITY_PROVIDER}'",
-            },
-        )
-        # Count updated rows to return meaningful metadata.
-        row_count: int = table.count_rows(where_clause)
-        return row_count
-    except Exception as option_a_exc:  # noqa: BLE001
-        # Option A failed (e.g. values_sql not supported in this lancedb build).
-        # Fall back to Option B: read rows → compute scores → merge_insert.
-        _option_b_update(table, source_id, where_clause)
-        row_count = table.count_rows(where_clause)
-        return row_count
+    row_count: int = table.count_rows(where_clause)
+    return row_count
 
 
-def _option_b_update(
+def _llm_update(
     table: Any,
     source_id: int,
     where_clause: str,
 ) -> None:
-    """Option B fallback: read rows → compute scores → merge_insert.
+    """LLM-based column update: read chunk texts → call gateway → update columns.
 
-    Reads chunk_id and token_count for the matching rows, computes the quality
-    score in Python, then uses merge_insert to update only the two attr_quality_*
-    columns (keyed on chunk_id). Zero new rows created.
+    Reads chunk_id and text for matching rows, calls score_chunks_via_gateway()
+    to get (score, provider) per row, then calls table.update() once per row to
+    overwrite only attr_quality_score and attr_quality_provider (keyed on chunk_id).
+    Zero new rows created; all other columns are untouched.
+
+    Uses table.update(where=..., values=...) rather than merge_insert because
+    merge_insert's when_matched_update_all() replaces the entire row — we only
+    want a column-mode partial update (agreed.md D3: taggers must NOT touch
+    lineage fields such as augmented_from, augmenter_id, etc.).
 
     Args:
-        table: An open lancedb Table object.
-        source_id: The source being processed (used only for error messages).
-        where_clause: The SQL WHERE clause identifying rows to update.
+        table:        An open lancedb Table object.
+        source_id:    The source being processed (used only in log messages).
+        where_clause: SQL WHERE clause identifying rows to update.
     """
     rows = (
         table.search()
         .where(where_clause)
-        .select(["chunk_id", "token_count"])
+        .select(["chunk_id", "text"])
         .to_list()
     )
     if not rows:
+        logger.info(
+            "_llm_update: no rows found for source_id=%d — skipping", source_id
+        )
         return
 
-    scored: list[dict[str, Any]] = [
-        {
-            "chunk_id": r["chunk_id"],
-            "attr_quality_score": compute_quality_score(int(r["token_count"])),
-            "attr_quality_provider": QUALITY_PROVIDER,
-        }
-        for r in rows
-    ]
+    scored = score_chunks_via_gateway([r["text"] for r in rows])
 
-    (
-        table.merge_insert("chunk_id")
-        .when_matched_update_all(updates=["attr_quality_score", "attr_quality_provider"])
-        .execute(scored)
-    )
+    for row, (score, provider) in zip(rows, scored):
+        chunk_id: str = row["chunk_id"]
+        table.update(
+            where=f"chunk_id = '{chunk_id}'",
+            values={
+                "attr_quality_score": score,
+                "attr_quality_provider": provider,
+            },
+        )

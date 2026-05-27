@@ -194,10 +194,11 @@ def chunks(context: AssetExecutionContext) -> list[dict[str, Any]]:
 @asset(
     partitions_def=sources_partitions,
     description=(
-        "Quality tagger (F-027): updates attr_quality_score and attr_quality_provider "
+        "Quality tagger (F-028): updates attr_quality_score and attr_quality_provider "
         "columns on existing producer_asset='chunks' rows in Lance. Zero new rows created. "
-        "Uses a stub length-heuristic scorer: score = min(1.0, token_count / 512.0). "
-        "F-028 will replace the stub with a real LLM scorer once the gateway exists."
+        "Scores each chunk by calling the internal LLM gateway (POST /api/internal/llm/completions). "
+        "attr_quality_provider is set to the model name returned by the gateway (e.g. "
+        "'claude-3-haiku-20240307' or 'mock' in CI)."
     ),
 )
 def attr_quality(context: AssetExecutionContext) -> MaterializeResult:

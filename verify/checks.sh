@@ -2182,19 +2182,54 @@ sys.exit(0)
 " || { echo "FAIL V6: duplicate chunk_ids detected"; exit 1; }
     ;;
   attr_quality)
-    # F-027: attr_quality asset — column-mode update of attr_quality_score and
-    # attr_quality_provider on existing producer_asset='chunks' rows.
+    # F-028: attr_quality asset — LLM-backed quality scoring via internal gateway.
+    # attr_quality_provider is set to the model name returned by the gateway.
+    # In CI (no ANTHROPIC_API_KEY), mock mode returns score=0.5, model="mock".
     COMPOSE="docker/docker-compose.dev.yml"
     [[ -f "$COMPOSE" ]] || { echo "no $COMPOSE yet"; exit 0; }
 
     FASTAPI_HOST_PORT="${FASTAPI_HOST_PORT:-18000}"
+    DAGSTER_HOST_PORT="${DAGSTER_HOST_PORT:-13000}"
     MINIO_USER="${MINIO_ROOT_USER:-minioadmin}"
     MINIO_PASS="${MINIO_ROOT_PASSWORD:-devpassword}"
 
-    echo "--- attr_quality: unit tests for quality_tagger.py helpers ---"
+    echo "--- attr_quality: unit tests for quality_tagger_llm.py helpers ---"
     docker compose -f "$COMPOSE" exec -T dagster-webserver \
-      python -m pytest /app/dagster/tests/test_quality_tagger.py -q || \
-      { echo "FAIL: attr_quality unit tests failed"; exit 1; }
+      python -m pytest /app/dagster/tests/test_quality_tagger_llm.py -q || \
+      { echo "FAIL: attr_quality tagger unit tests failed"; exit 1; }
+
+    echo "--- attr_quality: unit tests for LLM gateway helpers ---"
+    # Run on host via uv (pytest is a dev-only dep, not in the production container image).
+    ( cd apps/api && uv run pytest tests/test_llm_gateway.py -q ) || \
+      { echo "FAIL: attr_quality gateway unit tests failed"; exit 1; }
+
+    echo "--- attr_quality: V-SDK — no direct LLM SDK import in quality_tagger.py ---"
+    if grep -qE "^(import anthropic|from anthropic|import openai|from openai)" \
+        dagster/dagster_platform/quality_tagger.py; then
+      echo "FAIL V-SDK: direct LLM SDK import in quality_tagger.py" && exit 1
+    fi
+    echo "  V-SDK OK: no direct SDK import"
+
+    echo "--- attr_quality: V-ROUTE — POST /api/internal/llm/completions ---"
+    ROUTE_RESP=$(curl -sf -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/internal/llm/completions" \
+      -H "Content-Type: application/json" \
+      -d '{"messages":[{"role":"user","content":"Rate: hello world"}],"max_tokens":4}')
+    echo "$ROUTE_RESP" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert 'content' in d and 'model' in d, f'missing fields: {d}'
+print(f'  V-ROUTE OK: content={d[\"content\"]!r} model={d[\"model\"]!r}')
+" || { echo "FAIL: V-ROUTE check failed"; exit 1; }
+
+    echo "--- attr_quality: V-OPENAPI — internal route not in public spec ---"
+    curl -sf "http://localhost:${FASTAPI_HOST_PORT}/openapi.json" | python3 -c "
+import sys, json
+spec = json.load(sys.stdin)
+assert '/api/internal/llm/completions' not in spec.get('paths', {}), \
+    'FAIL V-OPENAPI: /api/internal/llm/completions leaked into public openapi.json'
+print('  V-OPENAPI OK: internal endpoint absent from public spec')
+" || { echo "FAIL: V-OPENAPI check failed"; exit 1; }
 
     echo "--- attr_quality: mint Bearer token ---"
     AQ_TOKEN_BODY=$(mktemp)
@@ -2214,12 +2249,12 @@ sys.exit(0)
       "http://localhost:${FASTAPI_HOST_PORT}/api/sources/collections" \
       -H "Authorization: Bearer $AQ_TOKEN" \
       -H "Content-Type: application/json" \
-      -d '{"name": "test-attr-quality-f027", "dataset_card_md": "F027 attr_quality test collection"}' \
+      -d '{"name": "test-attr-quality-f028", "dataset_card_md": "F028 attr_quality LLM tagger test collection"}' \
       -w '%{http_code}' -o "$AQ_COLL_BODY")
     if test "$AQ_COLL_STATUS" = "409"; then
       AQ_COLL_ID=$(docker compose -f "$COMPOSE" exec -T postgres \
         psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
-          "SELECT id FROM source_collection WHERE name='test-attr-quality-f027' LIMIT 1" \
+          "SELECT id FROM source_collection WHERE name='test-attr-quality-f028' LIMIT 1" \
         | tr -d '[:space:]')
     else
       test "$AQ_COLL_STATUS" = "201" \
@@ -2230,7 +2265,7 @@ sys.exit(0)
     echo "  collection id=$AQ_COLL_ID"
 
     echo "--- attr_quality: upload source PDF ---"
-    AQ_PDF=$(mktemp /tmp/f027-XXXXXX.pdf)
+    AQ_PDF=$(mktemp /tmp/f028-XXXXXX.pdf)
     python3 -c "
 pdf = (b'%PDF-1.4\n1 0 obj<</Type /Catalog /Pages 2 0 R>>endobj\n'
        b'2 0 obj<</Type /Pages /Kids[3 0 R] /Count 1>>endobj\n'
@@ -2404,59 +2439,128 @@ print(result.get('status', result.get('message', 'UNKNOWN')))
       || { echo "FAIL: timeout waiting for attr_quality COMPLETED_SUCCESS (last status=$AQ_BF_STATUS)"; exit 1; }
     echo "  attr_quality COMPLETED_SUCCESS"
 
-    echo "--- attr_quality: V2 — attr_quality_score non-null for all rows ---"
-    # V2 query: source_id only (NO producer_asset filter per agreed.md Issue 2 fix).
+    echo "--- attr_quality: V2 — attr_quality_score in [0.0, 1.0] for all rows ---"
     docker compose -f "$COMPOSE" exec -T \
       -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
       -e SRC_ID="${AQ_SRC_ID}" \
       fastapi python -c "
 import lancedb, os, sys
 src_id = int(os.environ['SRC_ID'])
-db = lancedb.connect(
-    's3://lance/chunks',
-    storage_options={
-        'aws_access_key_id': os.environ['S3_USER'],
-        'aws_secret_access_key': os.environ['S3_PASS'],
-        'endpoint': 'http://minio:9000',
-        'aws_region': 'us-east-1',
-        'allow_http': 'true',
-    })
-t = db.open_table('chunks')
-rows = t.search().where(f'source_id = {src_id}').select(['attr_quality_score']).to_list()
+db = lancedb.connect('s3://lance/chunks', storage_options={
+    'aws_access_key_id': os.environ['S3_USER'],
+    'aws_secret_access_key': os.environ['S3_PASS'],
+    'endpoint': 'http://minio:9000', 'aws_region': 'us-east-1', 'allow_http': 'true'})
+tbl = db.open_table('chunks')
+rows = tbl.search().where(f\"source_id = {src_id} AND producer_asset = 'chunks'\").select(['attr_quality_score']).to_list()
 assert rows, f'no rows found for source_id={src_id}'
-null_count = sum(1 for r in rows if r['attr_quality_score'] is None)
-assert null_count == 0, f'V2 FAIL: {null_count}/{len(rows)} rows have null attr_quality_score'
-print(f'  V2 OK: all {len(rows)} rows have non-null attr_quality_score for source_id={src_id}')
-sys.exit(0)
-" || { echo "FAIL: attr_quality V2 score non-null check failed"; exit 1; }
+bad = [r for r in rows if r['attr_quality_score'] is None or not (0.0 <= r['attr_quality_score'] <= 1.0)]
+assert not bad, f'FAIL V2: {len(bad)} rows have out-of-range score'
+print(f'  V2 OK: all {len(rows)} scores in [0.0, 1.0]')
+" || { echo "FAIL: attr_quality V2 score range check failed"; exit 1; }
 
-    echo "--- attr_quality: V3 — attr_quality_provider = 'length_heuristic' for all rows ---"
-    # V3 query: source_id only (NO producer_asset filter per agreed.md Issue 2 fix).
-    # F-027 stub deviation: provider is 'length_heuristic', not an LLM model name.
-    # F-028 will replace with real model name once LLM gateway exists.
+    echo "--- attr_quality: V3 — attr_quality_provider is NOT 'length_heuristic' ---"
+    # In CI (no ANTHROPIC_API_KEY), mock mode sets provider='mock'. That is acceptable.
+    # F-028 rejects the old stub value 'length_heuristic' — any other value is valid.
     docker compose -f "$COMPOSE" exec -T \
       -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
       -e SRC_ID="${AQ_SRC_ID}" \
       fastapi python -c "
 import lancedb, os, sys
 src_id = int(os.environ['SRC_ID'])
-db = lancedb.connect(
-    's3://lance/chunks',
-    storage_options={
-        'aws_access_key_id': os.environ['S3_USER'],
-        'aws_secret_access_key': os.environ['S3_PASS'],
-        'endpoint': 'http://minio:9000',
-        'aws_region': 'us-east-1',
-        'allow_http': 'true',
-    })
-t = db.open_table('chunks')
-rows = t.search().where(f'source_id = {src_id}').select(['attr_quality_provider']).to_list()
+db = lancedb.connect('s3://lance/chunks', storage_options={
+    'aws_access_key_id': os.environ['S3_USER'],
+    'aws_secret_access_key': os.environ['S3_PASS'],
+    'endpoint': 'http://minio:9000', 'aws_region': 'us-east-1', 'allow_http': 'true'})
+tbl = db.open_table('chunks')
+rows = tbl.search().where(f\"source_id = {src_id} AND producer_asset = 'chunks'\").select(['attr_quality_provider']).to_list()
 assert rows, f'no rows found for source_id={src_id}'
-wrong = [r['attr_quality_provider'] for r in rows if r['attr_quality_provider'] != 'length_heuristic']
-assert not wrong, f'V3 FAIL: {len(wrong)} rows have unexpected provider values: {set(wrong)}'
-print(f'  V3 OK: all {len(rows)} rows have attr_quality_provider=length_heuristic for source_id={src_id}')
-sys.exit(0)
+stub_rows = [r for r in rows if r.get('attr_quality_provider') == 'length_heuristic']
+assert not stub_rows, f'FAIL V3: {len(stub_rows)} rows still have stub provider'
+providers = {r['attr_quality_provider'] for r in rows}
+print(f'  V3 OK: providers = {providers}')
 " || { echo "FAIL: attr_quality V3 provider check failed"; exit 1; }
+
+    echo "--- attr_quality: V4 — idempotency: second run does not change row count ---"
+    # Capture row count before second run
+    AQ_RC_BEFORE=$(docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${AQ_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os
+db = lancedb.connect('s3://lance/chunks', storage_options={
+    'aws_access_key_id': os.environ['S3_USER'],
+    'aws_secret_access_key': os.environ['S3_PASS'],
+    'endpoint': 'http://minio:9000', 'aws_region': 'us-east-1', 'allow_http': 'true'})
+t = db.open_table('chunks')
+print(t.count_rows(f\"source_id = {int(os.environ['SRC_ID'])} AND producer_asset = 'chunks'\"))
+" | tr -d '[:space:]')
+
+    # Re-trigger attr_quality backfill
+    AQ_RUN2_BODY=$(mktemp)
+    AQ_RUN2_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $AQ_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"attr_quality\", \"source_ids\": [${AQ_SRC_ID}]}" \
+      -w '%{http_code}' -o "$AQ_RUN2_BODY")
+    test "$AQ_RUN2_STATUS" = "202" \
+      || { echo "FAIL V4: second run POST returned $AQ_RUN2_STATUS"; rm -f "$AQ_RUN2_BODY"; exit 1; }
+    AQ_BACKFILL_ID2=$(python3 -c "import json; print(json.load(open('$AQ_RUN2_BODY'))['dagster_run_id'])")
+    rm -f "$AQ_RUN2_BODY"
+    echo "  V4: second attr_quality backfill launched: id=$AQ_BACKFILL_ID2"
+
+    # Poll second run to COMPLETED_SUCCESS
+    AQ_BF2_STATUS="UNKNOWN"
+    for i in $(seq 1 40); do
+      AQ_BF2_STATUS=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+        python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill { status }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$AQ_BACKFILL_ID2'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+print(result.get('status', result.get('message', 'UNKNOWN')))
+" 2>&1 | tail -1)
+      echo "  [$i/40] V4 second backfill status: $AQ_BF2_STATUS"
+      case "$AQ_BF2_STATUS" in
+        COMPLETED_SUCCESS) break ;;
+        COMPLETED_FAILED|CANCELED|*FAIL*)
+          echo "FAIL V4: second run reached terminal non-success: $AQ_BF2_STATUS"; exit 1 ;;
+      esac
+      sleep 3
+    done
+    test "$AQ_BF2_STATUS" = "COMPLETED_SUCCESS" \
+      || { echo "FAIL V4: timeout waiting for second run COMPLETED_SUCCESS (last=$AQ_BF2_STATUS)"; exit 1; }
+
+    # Assert row count unchanged after second run
+    AQ_RC_AFTER=$(docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${AQ_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os
+db = lancedb.connect('s3://lance/chunks', storage_options={
+    'aws_access_key_id': os.environ['S3_USER'],
+    'aws_secret_access_key': os.environ['S3_PASS'],
+    'endpoint': 'http://minio:9000', 'aws_region': 'us-east-1', 'allow_http': 'true'})
+t = db.open_table('chunks')
+print(t.count_rows(f\"source_id = {int(os.environ['SRC_ID'])} AND producer_asset = 'chunks'\"))
+" | tr -d '[:space:]')
+
+    test "$AQ_RC_BEFORE" = "$AQ_RC_AFTER" \
+      || { echo "FAIL V4: row count changed $AQ_RC_BEFORE → $AQ_RC_AFTER (rows were inserted)"; exit 1; }
+    echo "  V4 OK: row count unchanged at $AQ_RC_AFTER after second run"
     ;;
   *)
     echo "Unknown layer: $LAYER" >&2
