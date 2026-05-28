@@ -29,6 +29,8 @@ WORKDIR /app
 # F-029: fasttext-langdetect (language detection, fasttext lid.176.ftz model via
 # fasttext-predict C extension; original pin 1.0.6 unavailable — using 1.1.1,
 # module import changed from fasttext_langdetect to ftlangdetect in 1.1.1).
+# F-030: datasketch>=1.6 (MinHash + MinHashLSH for near-duplicate clustering);
+# no version pin unless the local PyPI mirror restricts availability.
 RUN pip install --no-cache-dir \
     dagster==1.11.16 \
     dagster-webserver==1.11.16 \
@@ -40,7 +42,8 @@ RUN pip install --no-cache-dir \
     pyarrow==24.0.0 \
     tiktoken==0.7.0 \
     pytest==8.3.4 \
-    fasttext-langdetect==1.1.1
+    fasttext-langdetect==1.1.1 \
+    datasketch
 
 # Copy the entire dagster/ directory from the repo root into the image.
 # After this COPY:

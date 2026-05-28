@@ -1277,7 +1277,8 @@
               "extract_mineru",
               "chunks",
               "attr_quality",
-              "attr_lang"
+              "attr_lang",
+              "attr_minhash"
             ],
             "title": "Asset"
           },
@@ -1296,7 +1297,7 @@
           "source_ids"
         ],
         "title": "RunCreate",
-        "description": "Request body for POST /api/runs (F-018, F-024).\n\nFields:\n    asset: The asset to trigger. Supported values:\n           - \"extract_mineru\" (F-018): run MinerU PDF extraction.\n           - \"chunks\" (F-024): run chunking on extracted documents.\n           - \"attr_quality\" (F-027): run quality tagger (length-heuristic stub).\n           - \"attr_lang\" (F-029): run lang_fasttext tagger.\n           Pydantic v2 raises ValidationError for any other value \u2192 FastAPI 422.\n    source_ids: Non-empty list of source IDs to process.\n                min_length=1 enforces non-empty at the schema level \u2192 FastAPI 422."
+        "description": "Request body for POST /api/runs (F-018, F-024).\n\nFields:\n    asset: The asset to trigger. Supported values:\n           - \"extract_mineru\" (F-018): run MinerU PDF extraction.\n           - \"chunks\" (F-024): run chunking on extracted documents.\n           - \"attr_quality\" (F-027): run quality tagger (length-heuristic stub).\n           - \"attr_lang\" (F-029): run lang_fasttext tagger.\n           - \"attr_minhash\" (F-030): run minhash dedup tagger.\n           Pydantic v2 raises ValidationError for any other value \u2192 FastAPI 422.\n    source_ids: Non-empty list of source IDs to process.\n                min_length=1 enforces non-empty at the schema level \u2192 FastAPI 422."
       },
       "RunCreateResponse": {
         "properties": {

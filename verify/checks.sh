@@ -1339,6 +1339,7 @@ print('  F017-V1 OK: id=%d name=%s config_schema.type=%s output_schema=%s defaul
     bash "$0" chunks      # F-025
     bash "$0" attr_quality  # F-027
     bash "$0" attr_lang     # F-029
+    bash "$0" attr_minhash  # F-030
     ;;
   lance)
     # F-023: Lance global chunks table schema initialisation.
@@ -2915,6 +2916,461 @@ print(t.count_rows(f\"source_id = {int(os.environ['SRC_ID'])} AND producer_asset
     test "$AL_RC_BEFORE" = "$AL_RC_AFTER" \
       || { echo "FAIL V3: row count changed $AL_RC_BEFORE → $AL_RC_AFTER (rows were inserted)"; exit 1; }
     echo "  V3 OK: row count unchanged at $AL_RC_AFTER after second run"
+    ;;
+  attr_minhash)
+    # F-030: attr_minhash asset — MinHash near-duplicate detection tagger.
+    # Updates attr_minhash_signature (list[uint64] len=128), attr_minhash_cluster_id (int),
+    # and attr_minhash_is_head (bool) on existing chunks rows. Zero new rows created.
+    COMPOSE="docker/docker-compose.dev.yml"
+    [[ -f "$COMPOSE" ]] || { echo "no $COMPOSE yet"; exit 0; }
+
+    FASTAPI_HOST_PORT="${FASTAPI_HOST_PORT:-18000}"
+    DAGSTER_HOST_PORT="${DAGSTER_HOST_PORT:-13000}"
+    MINIO_USER="${MINIO_ROOT_USER:-minioadmin}"
+    MINIO_PASS="${MINIO_ROOT_PASSWORD:-devpassword}"
+
+    echo "--- attr_minhash: unit tests for minhash_tagger.py helpers ---"
+    docker compose -f "$COMPOSE" exec -T dagster-webserver \
+      python -m pytest /app/dagster/tests/test_minhash_tagger.py -q || \
+      { echo "FAIL: attr_minhash tagger unit tests failed"; exit 1; }
+
+    echo "--- attr_minhash: mint Bearer token ---"
+    AM_TOKEN_BODY=$(mktemp)
+    AM_TOKEN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/auth/token" \
+      -d "username=admin@example.com&password=testpassword123" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -w '%{http_code}' -o "$AM_TOKEN_BODY")
+    test "$AM_TOKEN_STATUS" = "200" \
+      || { echo "FAIL: attr_minhash) could not mint token (status $AM_TOKEN_STATUS) — run 'bash $0 auth' first"; rm -f "$AM_TOKEN_BODY"; exit 1; }
+    AM_TOKEN=$(python3 -c "import json; print(json.load(open('$AM_TOKEN_BODY'))['access_token'])")
+    rm -f "$AM_TOKEN_BODY"
+
+    echo "--- attr_minhash: create collection ---"
+    AM_COLL_BODY=$(mktemp)
+    AM_COLL_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/collections" \
+      -H "Authorization: Bearer $AM_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"name": "test-attr-minhash-f030", "dataset_card_md": "F030 attr_minhash minhash dedup tagger test collection"}' \
+      -w '%{http_code}' -o "$AM_COLL_BODY")
+    if test "$AM_COLL_STATUS" = "409"; then
+      AM_COLL_ID=$(docker compose -f "$COMPOSE" exec -T postgres \
+        psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+          "SELECT id FROM source_collection WHERE name='test-attr-minhash-f030' LIMIT 1" \
+        | tr -d '[:space:]')
+    else
+      test "$AM_COLL_STATUS" = "201" \
+        || { echo "FAIL: attr_minhash) collection create returned $AM_COLL_STATUS: $(cat "$AM_COLL_BODY")"; rm -f "$AM_COLL_BODY"; exit 1; }
+      AM_COLL_ID=$(python3 -c "import json; print(json.load(open('$AM_COLL_BODY'))['id'])")
+    fi
+    rm -f "$AM_COLL_BODY"
+    echo "  collection id=$AM_COLL_ID"
+
+    echo "--- attr_minhash: upload source PDF ---"
+    AM_PDF=$(mktemp /tmp/f030-XXXXXX.pdf)
+    python3 -c "
+pdf = (b'%PDF-1.4\n1 0 obj<</Type /Catalog /Pages 2 0 R>>endobj\n'
+       b'2 0 obj<</Type /Pages /Kids[3 0 R] /Count 1>>endobj\n'
+       b'3 0 obj<</Type /Page /MediaBox[0 0 612 792] /Parent 2 0 R>>endobj\n'
+       b'xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n'
+       b'0000000058 00000 n \n0000000115 00000 n \n'
+       b'trailer<</Size 4 /Root 1 0 R>>\nstartxref\n182\n%%EOF\n')
+open('$AM_PDF', 'wb').write(pdf)
+"
+    AM_UP_BODY=$(mktemp)
+    AM_UP_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/upload" \
+      -H "Authorization: Bearer $AM_TOKEN" \
+      -F "file=@${AM_PDF};type=application/pdf" \
+      -F "collection_id=${AM_COLL_ID}" \
+      -w '%{http_code}' -o "$AM_UP_BODY")
+    rm -f "$AM_PDF"
+    test "$AM_UP_STATUS" = "201" \
+      || { echo "FAIL: attr_minhash) upload returned $AM_UP_STATUS: $(cat "$AM_UP_BODY")"; rm -f "$AM_UP_BODY"; exit 1; }
+    AM_SRC_ID=$(python3 -c "import json; print(json.load(open('$AM_UP_BODY'))['id'])")
+    rm -f "$AM_UP_BODY"
+    echo "  uploaded source id=$AM_SRC_ID"
+
+    echo "--- attr_minhash: prerequisite — POST /api/runs extract_mineru ---"
+    AM_EX_RUN_BODY=$(mktemp)
+    AM_EX_RUN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $AM_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"extract_mineru\", \"source_ids\": [${AM_SRC_ID}]}" \
+      -w '%{http_code}' -o "$AM_EX_RUN_BODY")
+    test "$AM_EX_RUN_STATUS" = "202" \
+      || { echo "FAIL: attr_minhash) POST extract_mineru returned $AM_EX_RUN_STATUS: $(cat "$AM_EX_RUN_BODY")"; rm -f "$AM_EX_RUN_BODY"; exit 1; }
+    AM_EX_BACKFILL_ID=$(python3 -c "import json; print(json.load(open('$AM_EX_RUN_BODY'))['dagster_run_id'])")
+    rm -f "$AM_EX_RUN_BODY"
+    echo "  extract_mineru backfill launched: id=$AM_EX_BACKFILL_ID"
+
+    echo "--- attr_minhash: poll extract_mineru to COMPLETED_SUCCESS (<=120s) ---"
+    AM_EX_BF_STATUS="UNKNOWN"
+    for i in $(seq 1 40); do
+      AM_EX_BF_STATUS=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+        python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill { status }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$AM_EX_BACKFILL_ID'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+print(result.get('status', result.get('message', 'UNKNOWN')))
+" 2>&1 | tail -1)
+      echo "  [$i/40] extract_mineru backfill status: $AM_EX_BF_STATUS"
+      case "$AM_EX_BF_STATUS" in
+        COMPLETED_SUCCESS) break ;;
+        COMPLETED_FAILED|CANCELED|*FAIL*)
+          echo "FAIL: extract_mineru backfill reached terminal non-success state: $AM_EX_BF_STATUS"; exit 1 ;;
+      esac
+      sleep 3
+    done
+    test "$AM_EX_BF_STATUS" = "COMPLETED_SUCCESS" \
+      || { echo "FAIL: timeout waiting for extract_mineru COMPLETED_SUCCESS (last status=$AM_EX_BF_STATUS)"; exit 1; }
+    echo "  extract_mineru COMPLETED_SUCCESS"
+
+    echo "--- attr_minhash: prerequisite — POST /api/runs chunks ---"
+    AM_CH_RUN_BODY=$(mktemp)
+    AM_CH_RUN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $AM_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"chunks\", \"source_ids\": [${AM_SRC_ID}]}" \
+      -w '%{http_code}' -o "$AM_CH_RUN_BODY")
+    test "$AM_CH_RUN_STATUS" = "202" \
+      || { echo "FAIL: attr_minhash) POST chunks returned $AM_CH_RUN_STATUS: $(cat "$AM_CH_RUN_BODY")"; rm -f "$AM_CH_RUN_BODY"; exit 1; }
+    AM_CH_BACKFILL_ID=$(python3 -c "import json; print(json.load(open('$AM_CH_RUN_BODY'))['dagster_run_id'])")
+    rm -f "$AM_CH_RUN_BODY"
+    echo "  chunks backfill launched: id=$AM_CH_BACKFILL_ID"
+
+    echo "--- attr_minhash: poll chunks to COMPLETED_SUCCESS (<=120s) ---"
+    AM_CH_BF_STATUS="UNKNOWN"
+    for i in $(seq 1 40); do
+      AM_CH_BF_STATUS=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+        python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill { status }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$AM_CH_BACKFILL_ID'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+print(result.get('status', result.get('message', 'UNKNOWN')))
+" 2>&1 | tail -1)
+      echo "  [$i/40] chunks backfill status: $AM_CH_BF_STATUS"
+      case "$AM_CH_BF_STATUS" in
+        COMPLETED_SUCCESS) break ;;
+        COMPLETED_FAILED|CANCELED|*FAIL*)
+          echo "FAIL: chunks backfill reached terminal non-success state: $AM_CH_BF_STATUS"; exit 1 ;;
+      esac
+      sleep 3
+    done
+    test "$AM_CH_BF_STATUS" = "COMPLETED_SUCCESS" \
+      || { echo "FAIL: timeout waiting for chunks COMPLETED_SUCCESS (last status=$AM_CH_BF_STATUS)"; exit 1; }
+    echo "  chunks COMPLETED_SUCCESS"
+
+    # Capture row count BEFORE attr_minhash (baseline for V3 no-new-rows check).
+    AM_RC_BEFORE=$(docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${AM_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os
+db = lancedb.connect('s3://lance/chunks', storage_options={
+    'aws_access_key_id': os.environ['S3_USER'],
+    'aws_secret_access_key': os.environ['S3_PASS'],
+    'endpoint': 'http://minio:9000', 'aws_region': 'us-east-1', 'allow_http': 'true'})
+t = db.open_table('chunks')
+print(t.count_rows(f\"source_id = {int(os.environ['SRC_ID'])} AND producer_asset = 'chunks'\"))
+" | tr -d '[:space:]')
+    echo "  baseline row count: $AM_RC_BEFORE"
+
+    echo "--- attr_minhash: POST /api/runs attr_minhash → expect 202 ---"
+    AM_RUN_BODY=$(mktemp)
+    AM_RUN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $AM_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"attr_minhash\", \"source_ids\": [${AM_SRC_ID}]}" \
+      -w '%{http_code}' -o "$AM_RUN_BODY")
+    test "$AM_RUN_STATUS" = "202" \
+      || { echo "FAIL: attr_minhash POST /api/runs returned $AM_RUN_STATUS: $(cat "$AM_RUN_BODY")"; rm -f "$AM_RUN_BODY"; exit 1; }
+    AM_BACKFILL_ID=$(python3 -c "import json; print(json.load(open('$AM_RUN_BODY'))['dagster_run_id'])")
+    rm -f "$AM_RUN_BODY"
+    echo "  attr_minhash backfill launched: id=$AM_BACKFILL_ID"
+
+    echo "--- attr_minhash: poll attr_minhash backfill to COMPLETED_SUCCESS (<=120s) ---"
+    AM_BF_STATUS="UNKNOWN"
+    for i in $(seq 1 40); do
+      AM_BF_STATUS=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+        python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill { status }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$AM_BACKFILL_ID'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+print(result.get('status', result.get('message', 'UNKNOWN')))
+" 2>&1 | tail -1)
+      echo "  [$i/40] attr_minhash backfill status: $AM_BF_STATUS"
+      case "$AM_BF_STATUS" in
+        COMPLETED_SUCCESS) break ;;
+        COMPLETED_FAILED|CANCELED|*FAIL*)
+          echo "FAIL: attr_minhash backfill reached terminal non-success state: $AM_BF_STATUS"; exit 1 ;;
+      esac
+      sleep 3
+    done
+    test "$AM_BF_STATUS" = "COMPLETED_SUCCESS" \
+      || { echo "FAIL: timeout waiting for attr_minhash COMPLETED_SUCCESS (last status=$AM_BF_STATUS)"; exit 1; }
+    echo "  attr_minhash COMPLETED_SUCCESS"
+
+    echo "--- attr_minhash: V1 — signatures non-null and length 128 ---"
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${AM_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os
+src_id = int(os.environ['SRC_ID'])
+db = lancedb.connect('s3://lance/chunks', storage_options={
+    'aws_access_key_id': os.environ['S3_USER'],
+    'aws_secret_access_key': os.environ['S3_PASS'],
+    'endpoint': 'http://minio:9000', 'aws_region': 'us-east-1', 'allow_http': 'true'})
+t = db.open_table('chunks')
+rows = t.search().where(
+    f\"source_id = {src_id} AND producer_asset = 'chunks'\").select(
+    ['attr_minhash_signature']).to_list()
+assert len(rows) > 0, f'no rows found for source_id={src_id}'
+bad = [r for r in rows if r['attr_minhash_signature'] is None or len(r['attr_minhash_signature']) != 128]
+assert not bad, f'FAIL V1: {len(bad)} rows have null or wrong-length signature'
+print(f'  V1 OK: {len(rows)} rows, all have non-null 128-element signatures')
+" || { echo "FAIL: attr_minhash V1 signature check failed"; exit 1; }
+
+    echo "--- attr_minhash: V2 — exactly one head per cluster ---"
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${AM_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os, collections
+src_id = int(os.environ['SRC_ID'])
+db = lancedb.connect('s3://lance/chunks', storage_options={
+    'aws_access_key_id': os.environ['S3_USER'],
+    'aws_secret_access_key': os.environ['S3_PASS'],
+    'endpoint': 'http://minio:9000', 'aws_region': 'us-east-1', 'allow_http': 'true'})
+t = db.open_table('chunks')
+rows = t.search().where(
+    f\"source_id = {src_id} AND producer_asset = 'chunks'\").select(
+    ['attr_minhash_cluster_id', 'attr_minhash_is_head']).to_list()
+assert len(rows) > 0, f'no rows found for source_id={src_id}'
+cluster_heads = collections.Counter(
+    r['attr_minhash_cluster_id'] for r in rows if r['attr_minhash_is_head']
+)
+all_clusters = set(r['attr_minhash_cluster_id'] for r in rows)
+assert all_clusters == set(cluster_heads.keys()), f'some cluster has no head: missing={all_clusters - set(cluster_heads.keys())}'
+assert all(v == 1 for v in cluster_heads.values()), f'some cluster has multiple heads: {dict(cluster_heads)}'
+print(f'  V2 OK: {len(all_clusters)} cluster(s), each with exactly one head')
+" || { echo "FAIL: attr_minhash V2 head-per-cluster check failed"; exit 1; }
+
+    echo "--- attr_minhash: V3 — no new rows after first run ---"
+    AM_RC_AFTER=$(docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${AM_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os
+db = lancedb.connect('s3://lance/chunks', storage_options={
+    'aws_access_key_id': os.environ['S3_USER'],
+    'aws_secret_access_key': os.environ['S3_PASS'],
+    'endpoint': 'http://minio:9000', 'aws_region': 'us-east-1', 'allow_http': 'true'})
+t = db.open_table('chunks')
+print(t.count_rows(f\"source_id = {int(os.environ['SRC_ID'])} AND producer_asset = 'chunks'\"))
+" | tr -d '[:space:]')
+    test "$AM_RC_BEFORE" = "$AM_RC_AFTER" \
+      || { echo "FAIL V3: row count changed $AM_RC_BEFORE → $AM_RC_AFTER (rows were inserted)"; exit 1; }
+    echo "  V3 OK: row count unchanged at $AM_RC_AFTER after first run"
+
+    # Capture cluster label fingerprint after first run (for V4 stability check).
+    AM_LABELS_1=$(docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${AM_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os, json
+src_id = int(os.environ['SRC_ID'])
+db = lancedb.connect('s3://lance/chunks', storage_options={
+    'aws_access_key_id': os.environ['S3_USER'],
+    'aws_secret_access_key': os.environ['S3_PASS'],
+    'endpoint': 'http://minio:9000', 'aws_region': 'us-east-1', 'allow_http': 'true'})
+t = db.open_table('chunks')
+rows = t.search().where(
+    f\"source_id = {src_id} AND producer_asset = 'chunks'\").select(
+    ['chunk_id', 'attr_minhash_cluster_id', 'attr_minhash_is_head']).to_list()
+result = sorted([(r['chunk_id'], r['attr_minhash_cluster_id'], bool(r['attr_minhash_is_head'])) for r in rows])
+print(json.dumps(result))
+" | tr -d '[:space:]')
+
+    echo "--- attr_minhash: V4 — second run idempotent ---"
+    AM_RUN2_BODY=$(mktemp)
+    AM_RUN2_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+      -H "Authorization: Bearer $AM_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"asset\": \"attr_minhash\", \"source_ids\": [${AM_SRC_ID}]}" \
+      -w '%{http_code}' -o "$AM_RUN2_BODY")
+    test "$AM_RUN2_STATUS" = "202" \
+      || { echo "FAIL V4: second run POST returned $AM_RUN2_STATUS"; rm -f "$AM_RUN2_BODY"; exit 1; }
+    AM_BACKFILL_ID2=$(python3 -c "import json; print(json.load(open('$AM_RUN2_BODY'))['dagster_run_id'])")
+    rm -f "$AM_RUN2_BODY"
+    echo "  V4: second attr_minhash backfill launched: id=$AM_BACKFILL_ID2"
+
+    # Poll second run to COMPLETED_SUCCESS.
+    AM_BF2_STATUS="UNKNOWN"
+    for i in $(seq 1 40); do
+      AM_BF2_STATUS=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+        python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill { status }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '$AM_BACKFILL_ID2'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+print(result.get('status', result.get('message', 'UNKNOWN')))
+" 2>&1 | tail -1)
+      echo "  [$i/40] V4 second backfill status: $AM_BF2_STATUS"
+      case "$AM_BF2_STATUS" in
+        COMPLETED_SUCCESS) break ;;
+        COMPLETED_FAILED|CANCELED|*FAIL*)
+          echo "FAIL V4: second run reached terminal non-success: $AM_BF2_STATUS"; exit 1 ;;
+      esac
+      sleep 3
+    done
+    test "$AM_BF2_STATUS" = "COMPLETED_SUCCESS" \
+      || { echo "FAIL V4: timeout waiting for second run COMPLETED_SUCCESS (last=$AM_BF2_STATUS)"; exit 1; }
+
+    echo "--- attr_minhash: V4-V1 — signatures still valid after second run ---"
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${AM_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os
+src_id = int(os.environ['SRC_ID'])
+db = lancedb.connect('s3://lance/chunks', storage_options={
+    'aws_access_key_id': os.environ['S3_USER'],
+    'aws_secret_access_key': os.environ['S3_PASS'],
+    'endpoint': 'http://minio:9000', 'aws_region': 'us-east-1', 'allow_http': 'true'})
+t = db.open_table('chunks')
+rows = t.search().where(
+    f\"source_id = {src_id} AND producer_asset = 'chunks'\").select(
+    ['attr_minhash_signature']).to_list()
+assert len(rows) > 0
+bad = [r for r in rows if r['attr_minhash_signature'] is None or len(r['attr_minhash_signature']) != 128]
+assert not bad, f'FAIL V4-V1: {len(bad)} rows have null or wrong-length signature'
+print(f'  V4-V1 OK: all {len(rows)} rows still have 128-element signatures')
+" || { echo "FAIL: attr_minhash V4-V1 signature check failed after second run"; exit 1; }
+
+    echo "--- attr_minhash: V4-V2 — one head per cluster after second run ---"
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${AM_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os, collections
+src_id = int(os.environ['SRC_ID'])
+db = lancedb.connect('s3://lance/chunks', storage_options={
+    'aws_access_key_id': os.environ['S3_USER'],
+    'aws_secret_access_key': os.environ['S3_PASS'],
+    'endpoint': 'http://minio:9000', 'aws_region': 'us-east-1', 'allow_http': 'true'})
+t = db.open_table('chunks')
+rows = t.search().where(
+    f\"source_id = {src_id} AND producer_asset = 'chunks'\").select(
+    ['attr_minhash_cluster_id', 'attr_minhash_is_head']).to_list()
+cluster_heads = collections.Counter(
+    r['attr_minhash_cluster_id'] for r in rows if r['attr_minhash_is_head']
+)
+all_clusters = set(r['attr_minhash_cluster_id'] for r in rows)
+assert all_clusters == set(cluster_heads.keys()), f'some cluster has no head (second run)'
+assert all(v == 1 for v in cluster_heads.values()), f'some cluster has multiple heads (second run)'
+print(f'  V4-V2 OK: {len(all_clusters)} cluster(s), each with exactly one head')
+" || { echo "FAIL: attr_minhash V4-V2 head-per-cluster check failed after second run"; exit 1; }
+
+    # V4-V3: row count unchanged after second run.
+    AM_RC_AFTER2=$(docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${AM_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os
+db = lancedb.connect('s3://lance/chunks', storage_options={
+    'aws_access_key_id': os.environ['S3_USER'],
+    'aws_secret_access_key': os.environ['S3_PASS'],
+    'endpoint': 'http://minio:9000', 'aws_region': 'us-east-1', 'allow_http': 'true'})
+t = db.open_table('chunks')
+print(t.count_rows(f\"source_id = {int(os.environ['SRC_ID'])} AND producer_asset = 'chunks'\"))
+" | tr -d '[:space:]')
+    test "$AM_RC_BEFORE" = "$AM_RC_AFTER2" \
+      || { echo "FAIL V4-V3: row count changed $AM_RC_BEFORE → $AM_RC_AFTER2 after second run"; exit 1; }
+    echo "  V4-V3 OK: row count still $AM_RC_AFTER2 after second run"
+
+    # V4-labels: cluster label fingerprint must be identical to first run.
+    AM_LABELS_2=$(docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e SRC_ID="${AM_SRC_ID}" \
+      fastapi python -c "
+import lancedb, os, json
+src_id = int(os.environ['SRC_ID'])
+db = lancedb.connect('s3://lance/chunks', storage_options={
+    'aws_access_key_id': os.environ['S3_USER'],
+    'aws_secret_access_key': os.environ['S3_PASS'],
+    'endpoint': 'http://minio:9000', 'aws_region': 'us-east-1', 'allow_http': 'true'})
+t = db.open_table('chunks')
+rows = t.search().where(
+    f\"source_id = {src_id} AND producer_asset = 'chunks'\").select(
+    ['chunk_id', 'attr_minhash_cluster_id', 'attr_minhash_is_head']).to_list()
+result = sorted([(r['chunk_id'], r['attr_minhash_cluster_id'], bool(r['attr_minhash_is_head'])) for r in rows])
+print(json.dumps(result))
+" | tr -d '[:space:]')
+    test "$AM_LABELS_1" = "$AM_LABELS_2" \
+      || { echo "FAIL V4-labels: cluster label assignments changed between first and second run"; exit 1; }
+    echo "  V4-labels OK: cluster labels stable across re-runs"
     ;;
   *)
     echo "Unknown layer: $LAYER" >&2

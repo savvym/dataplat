@@ -19,6 +19,10 @@
 # F-029: attr_lang — column-mode update asset: detects language of each chunk using
 #        fasttext lid.176.ftz, updates attr_lang_code and attr_lang_confidence in-place.
 #        Zero new rows. Uses helpers from lang_tagger.py.
+# F-030: attr_minhash — column-mode update asset: computes MinHash signatures and
+#        clusters near-duplicate chunks via MinHashLSH(threshold=0.85), updates
+#        attr_minhash_signature, attr_minhash_cluster_id, attr_minhash_is_head in-place.
+#        Zero new rows. Uses helpers from minhash_tagger.py.
 
 from typing import Any
 
@@ -58,6 +62,10 @@ from dagster_platform.quality_tagger import (
 
 from dagster_platform.lang_tagger import (
     update_lang_in_lance,
+)
+
+from dagster_platform.minhash_tagger import (
+    update_minhash_in_lance,
 )
 
 # F-012: Dynamic partition definition for source uploads.
@@ -300,6 +308,57 @@ def attr_lang(context: AssetExecutionContext) -> MaterializeResult:
     )
 
 
+@asset(
+    partitions_def=sources_partitions,
+    description=(
+        "MinHash dedup tagger (F-030): updates attr_minhash_signature, "
+        "attr_minhash_cluster_id, attr_minhash_is_head in chunks table. "
+        "Zero new rows created. Column-mode update only."
+    ),
+)
+def attr_minhash(context: AssetExecutionContext) -> MaterializeResult:
+    """Column-mode MinHash near-duplicate tagger asset (F-030).
+
+    Steps (agreed.md §3 D2):
+      1. Parse source_id from partition key.
+      2. Call update_minhash_in_lance() to fetch all chunk rows, sort by chunk_id,
+         compute MinHash signatures and LSH-based cluster assignments, then update
+         attr_minhash_signature, attr_minhash_cluster_id, and attr_minhash_is_head
+         on existing producer_asset='chunks' rows. Zero new rows created.
+      3. Return MaterializeResult with source_id and rows_updated metadata.
+
+    Does NOT use io_manager_key — this is a column-mode update, not a row insert.
+    """
+    partition_key = context.partition_key
+    source_id = int(partition_key.removeprefix("src_"))
+    context.log.info(
+        "attr_minhash: starting for partition_key=%s source_id=%d",
+        partition_key,
+        source_id,
+    )
+
+    row_count = update_minhash_in_lance(source_id)
+    context.log.info(
+        "attr_minhash: updated %d row(s) for source_id=%d",
+        row_count,
+        source_id,
+    )
+
+    if row_count == 0:
+        context.log.warning(
+            "attr_minhash: zero rows updated for source_id=%d — "
+            "chunks may not yet exist",
+            source_id,
+        )
+
+    return MaterializeResult(
+        metadata={
+            "source_id": MetadataValue.int(source_id),
+            "rows_updated": MetadataValue.int(row_count),
+        }
+    )
+
+
 @op
 def hello_op(context) -> None:  # type: ignore[no-untyped-def]
     """Minimal op that logs a greeting. Used by hello_world_job (F-005)."""
@@ -320,6 +379,6 @@ def hello_world_job() -> None:
 
 defs = Definitions(
     jobs=[hello_world_job],
-    assets=[source_asset, extract_mineru, chunks, attr_quality, attr_lang],
+    assets=[source_asset, extract_mineru, chunks, attr_quality, attr_lang, attr_minhash],
     resources={"lance_chunks_io": LanceChunksIOManager()},
 )

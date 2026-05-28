@@ -177,6 +177,17 @@ async def trigger_extract_run(
             )
         kind = "attr_lang"
         asset_keys = ["attr_lang"]
+    # F-030: attr_minhash backfill
+    elif body.asset == "attr_minhash":
+        try:
+            backfill_id = await gateway.launch_attr_minhash_backfill(partition_keys)
+        except DagsterGatewayError as exc:
+            return JSONResponse(  # type: ignore[return-value]
+                status_code=503,
+                content={"detail": str(exc)},
+            )
+        kind = "attr_minhash"
+        asset_keys = ["attr_minhash"]
     else:
         # Defensive: should be unreachable because RunCreate.asset Literal
         # validation rejects any other value at parse time (→ FastAPI 422).
