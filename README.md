@@ -122,7 +122,7 @@ done
 
 ## 当前进度（Phase 0–1）
 
-`22/105` features passing. Latest: F-022 (document preview endpoint).
+`30/105` features passing. Latest: F-030 (minhash dedup tagger).
 
 - **F-001** docker-compose 开发栈
 - **F-002** Postgres 基线迁移（8 张 §4.1 业务表）
@@ -147,7 +147,17 @@ done
 - **F-020** `GET /api/sources/{source_id}/documents` 列出 document variants：返回指定 source 的所有 `document_variant` 行（纯 JSON 数组,不分页——每 source 通常 1–3 个 variant）；新增 `DocumentVariantRead` 模型（10 字段：id / extractor_name / extractor_version / config_hash / storage_prefix / page_count / image_count / is_canonical / materialized_at / dagster_run_id，`from_attributes=True`）；**两步 owner-scoping**（同 F-013 `GET /{id}`：`LEFT JOIN source_collection`+ `OR(owner_id=caller, collection_id IS NULL)`，缺失或越权统一 404 防枚举）；路由插在 `POST /upload` 之后、`GET /{id}` catch-all 之前；accessible source 无 variant → 200+`[]`，source 不存在/越权 → 404；checks.sh 新增 `documents)` 层（自包含：上传+触发抽取+轮询到 COMPLETED_SUCCESS+V1 200/array[1]/5 必需字段+V2 99999→404），接入 `all)` 链；openapi.json 同 commit 重生成（invariant #6）。
 - **F-021** `POST /api/sources/{source_id}/documents/{extractor_name}/set-canonical` 设置 canonical variant：原子性(单事务内) CLEAR `is_canonical=FALSE` 旧行 + SET `is_canonical=TRUE` 目标行(按 extractor_name 最高 id);CLEAR-first 避免暂态违反 `idx_doc_canonical` 部分唯一索引;两条 UPDATE 均设 `synchronize_session=False`(refresh 提供权威状态);`await session.refresh(target)` 必须在 commit 后调用(expire_on_commit=True 否则 MissingGreenlet);owner-scoping 同 F-020;源不存在→404 "Source not found" / variant 不存在→404 "Variant not found";返回 `DocumentVariantRead`(HTTP 200);checks.sh `documents)` 层扩展 V1(200+字段)/V2(psql COUNT=1 + extractor_name=mineru)/V3a(pg_indexes 索引存在)/V3b(INSERT probe 行+UPDATE→ERROR 唯一约束拒绝+cleanup);openapi.json 同 commit。
 
-下一批候选：F-022（render document preview）/ F-023（Lance chunks 表初始化）/ F-024（触发分块）。
+- **F-022** Document preview endpoint
+- **F-023** Lance 全局 chunks 表初始化（24 列 Arrow schema）
+- **F-024** `POST /api/runs {asset:'chunks'}` 触发分块
+- **F-025** 固定大小 token chunking 算子（tiktoken cl100k_base 512-token windows）
+- **F-026** LanceChunksIOManager — delete-before-insert 幂等 IO 管理器
+- **F-027** quality tagger trigger（attr_quality asset + API 分发）
+- **F-028** LLM quality scorer（通过 LLMGateway，column-mode 更新）
+- **F-029** lang_fasttext tagger（fasttext lid.176.ftz 语言检测）
+- **F-030** minhash_dedup tagger（datasketch MinHash+LSH 近似去重）
+
+下一批候选：F-031（column-mode IOManager 验证）/ F-032（chunk query endpoint）/ F-033（chunk aggregate endpoint）。
 
 ---
 
