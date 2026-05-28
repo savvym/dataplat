@@ -104,8 +104,63 @@ def detect_language(text: str) -> tuple[str, float]:
 # ---------------------------------------------------------------------------
 
 
+def compute_lang_scores(source_id: int) -> list[dict]:
+    """Read chunk_id + text from Lance, detect language via fasttext.
+
+    Returns partial dicts suitable for LanceChunksIOManager column mode (F-031).
+    Does NOT write to Lance — the IOManager handles the write.
+
+    Args:
+        source_id: The source to process.
+
+    Returns:
+        List of dicts: [{"chunk_id": str, "attr_lang_code": str,
+        "attr_lang_confidence": float}, ...].
+        Returns an empty list if no chunks exist for this source.
+    """
+    lance_bucket = os.environ.get("MINIO_LANCE_BUCKET", "lance")
+    db_uri = f"s3://{lance_bucket}/chunks"
+    storage_options = _build_lance_storage_options()
+
+    db = lancedb.connect(db_uri, storage_options=storage_options)
+    table = db.open_table("chunks")
+
+    where_clause = f"source_id = {source_id} AND producer_asset = 'chunks'"
+    rows = (
+        table.search()
+        .where(where_clause)
+        .select(["chunk_id", "text"])
+        .to_list()
+    )
+    if not rows:
+        logger.info(
+            "compute_lang_scores: no rows found for source_id=%d", source_id
+        )
+        return []
+
+    result: list[dict] = []
+    for row in rows:
+        chunk_id: str = row["chunk_id"]
+        text: str = row["text"] or ""
+        code, conf = detect_language(text)
+        result.append(
+            {
+                "chunk_id": chunk_id,
+                "attr_lang_code": code,
+                "attr_lang_confidence": conf,
+            }
+        )
+    return result
+
+
 def update_lang_in_lance(source_id: int) -> int:
     """Update attr_lang_code and attr_lang_confidence on existing chunk rows.
+
+    .. deprecated::
+        F-031: Use ``compute_lang_scores(source_id)`` and route the result
+        through ``LanceChunksIOManager`` (column mode) instead.  This function
+        is kept for backward compatibility but is no longer called from Dagster
+        tagger assets.
 
     Performs a **column-mode update** on existing rows where:
         source_id = <source_id> AND producer_asset = 'chunks'
@@ -149,6 +204,11 @@ def _lang_update(
     where_clause: str,
 ) -> None:
     """Language detection column update: read chunk texts → detect → update columns.
+
+    .. deprecated::
+        F-031: Internal helper for the deprecated ``update_lang_in_lance()``.
+        New code should use ``compute_lang_scores()`` and route through
+        ``LanceChunksIOManager`` column mode.
 
     Reads chunk_id and text for matching rows, calls detect_language() per row,
     then calls table.update() once per row to overwrite only attr_lang_code and

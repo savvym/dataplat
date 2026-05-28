@@ -1340,6 +1340,7 @@ print('  F017-V1 OK: id=%d name=%s config_schema.type=%s output_schema=%s defaul
     bash "$0" attr_quality  # F-027
     bash "$0" attr_lang     # F-029
     bash "$0" attr_minhash  # F-030
+    bash "$0" attr_col_isolation  # F-031
     ;;
   lance)
     # F-023: Lance global chunks table schema initialisation.
@@ -3372,8 +3373,243 @@ print(json.dumps(result))
       || { echo "FAIL V4-labels: cluster label assignments changed between first and second run"; exit 1; }
     echo "  V4-labels OK: cluster labels stable across re-runs"
     ;;
-  *)
-    echo "Unknown layer: $LAYER" >&2
+  attr_col_isolation)
+    # F-031: Cross-tagger column isolation end-to-end.
+    # Exercises V-criterion #1: running quality tagger then lang tagger preserves
+    # attr_quality_score (lang tagger must not clobber quality columns).
+    # Exercises V-criterion #2: static grep verifies merge_insert("chunk_id") is used.
+    COMPOSE="docker/docker-compose.dev.yml"
+    [[ -f "$COMPOSE" ]] || { echo "no $COMPOSE yet"; exit 0; }
+
+    FASTAPI_HOST_PORT="${FASTAPI_HOST_PORT:-18000}"
+    DAGSTER_HOST_PORT="${DAGSTER_HOST_PORT:-13000}"
+    MINIO_USER="${MINIO_ROOT_USER:-minioadmin}"
+    MINIO_PASS="${MINIO_ROOT_PASSWORD:-devpassword}"
+
+    echo "--- attr_col_isolation: unit tests for LanceChunksIOManager column mode ---"
+    docker compose -f "$COMPOSE" exec -T dagster-webserver \
+      python -m pytest /app/dagster/tests/test_lance_io_manager_column_mode.py -q || \
+      { echo "FAIL: attr_col_isolation unit tests failed"; exit 1; }
+
+    echo "--- attr_col_isolation: V-criterion #2 — merge_insert(\"chunk_id\") present ---"
+    grep -n 'merge_insert("chunk_id")' \
+        dagster/dagster_platform/lance_io_manager.py | grep -q "." \
+      || { echo "FAIL: merge_insert not found in lance_io_manager.py"; exit 1; }
+    echo "  V-criterion #2 OK: merge_insert(\"chunk_id\") present in lance_io_manager.py"
+
+    echo "--- attr_col_isolation: mint Bearer token ---"
+    ACI_TOKEN_BODY=$(mktemp)
+    ACI_TOKEN_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/auth/token" \
+      -d "username=admin@example.com&password=testpassword123" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -w '%{http_code}' -o "$ACI_TOKEN_BODY")
+    test "$ACI_TOKEN_STATUS" = "200" \
+      || { echo "FAIL: attr_col_isolation) could not mint token (status $ACI_TOKEN_STATUS) — run 'bash $0 auth' first"; rm -f "$ACI_TOKEN_BODY"; exit 1; }
+    ACI_TOKEN=$(python3 -c "import json; print(json.load(open('$ACI_TOKEN_BODY'))['access_token'])")
+    rm -f "$ACI_TOKEN_BODY"
+
+    echo "--- attr_col_isolation: create collection ---"
+    ACI_COLL_BODY=$(mktemp)
+    ACI_COLL_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/collections" \
+      -H "Authorization: Bearer $ACI_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"name": "test-attr-col-isolation-f031", "dataset_card_md": "F031 column isolation test collection"}' \
+      -w '%{http_code}' -o "$ACI_COLL_BODY")
+    if test "$ACI_COLL_STATUS" = "409"; then
+      ACI_COLL_ID=$(docker compose -f "$COMPOSE" exec -T postgres \
+        psql -U "${POSTGRES_USER:-app}" -d "${POSTGRES_DB:-platform}" -tAc \
+          "SELECT id FROM source_collection WHERE name='test-attr-col-isolation-f031' LIMIT 1" \
+        | tr -d '[:space:]')
+    else
+      test "$ACI_COLL_STATUS" = "201" \
+        || { echo "FAIL: attr_col_isolation) collection create returned $ACI_COLL_STATUS: $(cat "$ACI_COLL_BODY")"; rm -f "$ACI_COLL_BODY"; exit 1; }
+      ACI_COLL_ID=$(python3 -c "import json; print(json.load(open('$ACI_COLL_BODY'))['id'])")
+    fi
+    rm -f "$ACI_COLL_BODY"
+    echo "  collection id=$ACI_COLL_ID"
+
+    echo "--- attr_col_isolation: upload source PDF ---"
+    ACI_PDF=$(mktemp /tmp/f031-XXXXXX.pdf)
+    python3 -c "
+pdf = (b'%PDF-1.4\n1 0 obj<</Type /Catalog /Pages 2 0 R>>endobj\n'
+       b'2 0 obj<</Type /Pages /Kids[3 0 R] /Count 1>>endobj\n'
+       b'3 0 obj<</Type /Page /MediaBox[0 0 612 792] /Parent 2 0 R>>endobj\n'
+       b'xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n'
+       b'0000000058 00000 n \n0000000115 00000 n \n'
+       b'trailer<</Size 4 /Root 1 0 R>>\nstartxref\n182\n%%EOF\n')
+open('$ACI_PDF', 'wb').write(pdf)
+"
+    ACI_UP_BODY=$(mktemp)
+    ACI_UP_STATUS=$(curl -sS -X POST \
+      "http://localhost:${FASTAPI_HOST_PORT}/api/sources/upload" \
+      -H "Authorization: Bearer $ACI_TOKEN" \
+      -F "file=@${ACI_PDF};type=application/pdf" \
+      -F "collection_id=${ACI_COLL_ID}" \
+      -w '%{http_code}' -o "$ACI_UP_BODY")
+    rm -f "$ACI_PDF"
+    test "$ACI_UP_STATUS" = "201" \
+      || { echo "FAIL: attr_col_isolation) upload returned $ACI_UP_STATUS: $(cat "$ACI_UP_BODY")"; rm -f "$ACI_UP_BODY"; exit 1; }
+    ACI_SRC_ID=$(python3 -c "import json; print(json.load(open('$ACI_UP_BODY'))['id'])")
+    rm -f "$ACI_UP_BODY"
+    echo "  uploaded source id=$ACI_SRC_ID"
+
+    # Helper: launch a backfill for a given asset+source and poll to COMPLETED_SUCCESS.
+    _aci_trigger_and_poll() {
+      local asset_name="$1"
+      local src_id="$2"
+      local run_body
+      run_body=$(mktemp)
+      local run_status
+      run_status=$(curl -sS -X POST \
+        "http://localhost:${FASTAPI_HOST_PORT}/api/runs" \
+        -H "Authorization: Bearer $ACI_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"asset\": \"${asset_name}\", \"source_ids\": [${src_id}]}" \
+        -w '%{http_code}' -o "$run_body")
+      test "$run_status" = "202" \
+        || { echo "FAIL: attr_col_isolation) POST ${asset_name} returned ${run_status}: $(cat "$run_body")"; rm -f "$run_body"; exit 1; }
+      local backfill_id
+      backfill_id=$(python3 -c "import json; print(json.load(open('$run_body'))['dagster_run_id'])")
+      rm -f "$run_body"
+      echo "  ${asset_name} backfill launched: id=${backfill_id}"
+
+      echo "--- attr_col_isolation: poll ${asset_name} to COMPLETED_SUCCESS (<=120s) ---"
+      local bf_status="UNKNOWN"
+      for i in $(seq 1 40); do
+        bf_status=$(docker compose -f "$COMPOSE" exec -T dagster-webserver \
+          python3 -c "
+import urllib.request, json, sys
+url = 'http://localhost:3000/graphql'
+query = json.dumps({
+    'query': '''query GetBackfill(\$id: String!) {
+        partitionBackfillOrError(backfillId: \$id) {
+            __typename
+            ... on PartitionBackfill { status }
+            ... on BackfillNotFoundError { message }
+            ... on PythonError { message }
+        }
+    }''',
+    'variables': {'id': '${backfill_id}'}
+})
+req = urllib.request.Request(url, data=query.encode(), headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=5)
+data = json.load(resp)
+result = data['data']['partitionBackfillOrError']
+print(result.get('status', result.get('message', 'UNKNOWN')))
+" 2>&1 | tail -1)
+        echo "  [$i/40] ${asset_name} backfill status: ${bf_status}"
+        case "${bf_status}" in
+          COMPLETED_SUCCESS) break ;;
+          COMPLETED_FAILED|CANCELED|*FAIL*)
+            echo "FAIL: ${asset_name} backfill reached terminal non-success state: ${bf_status}"; exit 1 ;;
+        esac
+        sleep 3
+      done
+      test "${bf_status}" = "COMPLETED_SUCCESS" \
+        || { echo "FAIL: timeout waiting for ${asset_name} COMPLETED_SUCCESS (last status=${bf_status})"; exit 1; }
+      echo "  ${asset_name} COMPLETED_SUCCESS"
+    }
+
+    echo "--- attr_col_isolation: prerequisite — extract_mineru ---"
+    _aci_trigger_and_poll "extract_mineru" "$ACI_SRC_ID"
+
+    echo "--- attr_col_isolation: prerequisite — chunks ---"
+    _aci_trigger_and_poll "chunks" "$ACI_SRC_ID"
+
+    echo "--- attr_col_isolation: run quality tagger ---"
+    _aci_trigger_and_poll "attr_quality" "$ACI_SRC_ID"
+
+    echo "--- attr_col_isolation: V-criterion #1 pre-lang snapshot ---"
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e ACI_SRC_ID="${ACI_SRC_ID}" \
+      dagster-webserver python3 - <<'PYEOF'
+import lancedb, json, math, os, sys
+
+src_id = int(os.environ["ACI_SRC_ID"])
+snap_f = "/tmp/aci_quality_snapshot.json"
+
+storage_options = {
+    "aws_access_key_id":     os.environ["S3_USER"],
+    "aws_secret_access_key": os.environ["S3_PASS"],
+    "endpoint":              "http://minio:9000",
+    "aws_region":            "us-east-1",
+    "allow_http":            "true",
+}
+db  = lancedb.connect("s3://lance/chunks", storage_options=storage_options)
+tbl = db.open_table("chunks")
+
+where = f"source_id = {src_id} AND producer_asset = 'chunks'"
+rows  = (tbl.search()
+            .where(where)
+            .select(["chunk_id", "attr_quality_score", "attr_quality_provider",
+                     "attr_lang_code", "attr_lang_confidence"])
+            .to_list())
+assert rows, f"No rows found for source_id={src_id}"
+
+for r in rows:
+    assert r["attr_quality_score"] is not None, \
+        f"FAIL pre_lang: attr_quality_score is None for chunk_id={r['chunk_id']}"
+    assert r["attr_lang_code"] is None, \
+        f"FAIL pre_lang: attr_lang_code should be None but got '{r['attr_lang_code']}' for chunk_id={r['chunk_id']}"
+
+snapshot = {r["chunk_id"]: r["attr_quality_score"] for r in rows}
+with open(snap_f, "w") as fh:
+    json.dump(snapshot, fh)
+print(f"PASS pre_lang: {len(rows)} row(s), snapshot saved")
+PYEOF
+    test $? -eq 0 || { echo "FAIL: attr_col_isolation pre_lang assertion failed"; exit 1; }
+    echo "  V-criterion #1 pre-lang: OK"
+
+    echo "--- attr_col_isolation: run lang tagger ---"
+    _aci_trigger_and_poll "attr_lang" "$ACI_SRC_ID"
+
+    echo "--- attr_col_isolation: V-criterion #1 post-lang assertion ---"
+    docker compose -f "$COMPOSE" exec -T \
+      -e S3_USER="${MINIO_USER}" -e S3_PASS="${MINIO_PASS}" \
+      -e ACI_SRC_ID="${ACI_SRC_ID}" \
+      dagster-webserver python3 - <<'PYEOF'
+import lancedb, json, math, os, sys
+
+src_id = int(os.environ["ACI_SRC_ID"])
+snap_f = "/tmp/aci_quality_snapshot.json"
+
+storage_options = {
+    "aws_access_key_id":     os.environ["S3_USER"],
+    "aws_secret_access_key": os.environ["S3_PASS"],
+    "endpoint":              "http://minio:9000",
+    "aws_region":            "us-east-1",
+    "allow_http":            "true",
+}
+db  = lancedb.connect("s3://lance/chunks", storage_options=storage_options)
+tbl = db.open_table("chunks")
+
+where = f"source_id = {src_id} AND producer_asset = 'chunks'"
+rows  = (tbl.search()
+            .where(where)
+            .select(["chunk_id", "attr_quality_score", "attr_quality_provider",
+                     "attr_lang_code", "attr_lang_confidence"])
+            .to_list())
+assert rows, f"No rows found for source_id={src_id}"
+
+with open(snap_f) as fh:
+    snapshot = json.load(fh)
+
+for r in rows:
+    cid = r["chunk_id"]
+    assert r["attr_lang_code"] is not None, \
+        f"FAIL post_lang: attr_lang_code is None for chunk_id={cid}"
+    assert math.isclose(r["attr_quality_score"], snapshot[cid], rel_tol=1e-5), \
+        (f"FAIL post_lang: attr_quality_score changed for chunk_id={cid}: "
+         f"was {snapshot[cid]}, now {r['attr_quality_score']}")
+print(f"PASS post_lang: {len(rows)} row(s), quality scores unchanged after lang tagger")
+PYEOF
+    test $? -eq 0 || { echo "FAIL: attr_col_isolation post_lang assertion failed"; exit 1; }
+    echo "  V-criterion #1 post-lang: OK"
+    ;;
+  *)    echo "Unknown layer: $LAYER" >&2
     exit 2
     ;;
 esac

@@ -135,8 +135,62 @@ def score_chunks_via_gateway(texts: list[str]) -> list[tuple[float, str]]:
 # ---------------------------------------------------------------------------
 
 
+def compute_quality_scores(source_id: int) -> list[dict]:
+    """Read chunk_id + text from Lance, score via LLM gateway.
+
+    Returns partial dicts suitable for LanceChunksIOManager column mode (F-031).
+    Does NOT write to Lance — the IOManager handles the write.
+
+    Args:
+        source_id: The source to process.
+
+    Returns:
+        List of dicts: [{"chunk_id": str, "attr_quality_score": float,
+        "attr_quality_provider": str}, ...].
+        Returns an empty list if no chunks exist for this source.
+    """
+    lance_bucket = os.environ.get("MINIO_LANCE_BUCKET", "lance")
+    db_uri = f"s3://{lance_bucket}/chunks"
+    storage_options = _build_lance_storage_options()
+
+    db = lancedb.connect(db_uri, storage_options=storage_options)
+    table = db.open_table("chunks")
+
+    where_clause = f"source_id = {source_id} AND producer_asset = 'chunks'"
+    rows = (
+        table.search()
+        .where(where_clause)
+        .select(["chunk_id", "text"])
+        .to_list()
+    )
+    if not rows:
+        logger.info(
+            "compute_quality_scores: no rows found for source_id=%d", source_id
+        )
+        return []
+
+    scored = score_chunks_via_gateway([r["text"] for r in rows])
+
+    result: list[dict] = []
+    for row, (score, provider) in zip(rows, scored):
+        result.append(
+            {
+                "chunk_id": row["chunk_id"],
+                "attr_quality_score": score,
+                "attr_quality_provider": provider,
+            }
+        )
+    return result
+
+
 def update_quality_scores_in_lance(source_id: int) -> int:
     """Update attr_quality_score and attr_quality_provider on existing chunk rows.
+
+    .. deprecated::
+        F-031: Use ``compute_quality_scores(source_id)`` and route the result
+        through ``LanceChunksIOManager`` (column mode) instead.  This function
+        is kept for backward compatibility but is no longer called from Dagster
+        tagger assets.
 
     Performs a **column-mode update** on existing rows where:
         source_id = <source_id> AND producer_asset = 'chunks'
@@ -179,6 +233,11 @@ def _llm_update(
     where_clause: str,
 ) -> None:
     """LLM-based column update: read chunk texts → call gateway → update columns.
+
+    .. deprecated::
+        F-031: Internal helper for the deprecated ``update_quality_scores_in_lance()``.
+        New code should use ``compute_quality_scores()`` and route through
+        ``LanceChunksIOManager`` column mode.
 
     Reads chunk_id and text for matching rows, calls score_chunks_via_gateway()
     to get (score, provider) per row, then calls table.update() once per row to

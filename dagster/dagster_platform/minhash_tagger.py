@@ -260,8 +260,67 @@ def _cluster_rows(rows: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+def compute_minhash_scores(source_id: int) -> list[dict]:
+    """Read chunk_id + text from Lance, compute MinHash signatures and clusters.
+
+    Fetches ALL rows for the source (required by batch clustering), sorts by
+    chunk_id ascending for deterministic cluster label assignment, runs
+    _cluster_rows(), and returns partial dicts.
+
+    Returns partial dicts suitable for LanceChunksIOManager column mode (F-031).
+    Does NOT write to Lance — the IOManager handles the write.
+
+    Args:
+        source_id: The source to process.
+
+    Returns:
+        List of dicts: [{"chunk_id": str, "attr_minhash_signature": list[int],
+        "attr_minhash_cluster_id": int, "attr_minhash_is_head": bool}, ...].
+        Returns an empty list if no chunks exist for this source.
+    """
+    lance_bucket = os.environ.get("MINIO_LANCE_BUCKET", "lance")
+    db_uri = f"s3://{lance_bucket}/chunks"
+    storage_options = _build_lance_storage_options()
+
+    db = lancedb.connect(db_uri, storage_options=storage_options)
+    table = db.open_table("chunks")
+
+    where_clause = f"source_id = {source_id} AND producer_asset = 'chunks'"
+    rows = (
+        table.search()
+        .where(where_clause)
+        .select(["chunk_id", "text"])
+        .to_list()
+    )
+    if not rows:
+        logger.info(
+            "compute_minhash_scores: no rows found for source_id=%d", source_id
+        )
+        return []
+
+    # Sort by chunk_id ascending for canonical, deterministic cluster labels.
+    rows_sorted = sorted(rows, key=lambda r: r["chunk_id"])
+    clustered = _cluster_rows(rows_sorted)
+
+    return [
+        {
+            "chunk_id": r["chunk_id"],
+            "attr_minhash_signature": r["attr_minhash_signature"],
+            "attr_minhash_cluster_id": r["attr_minhash_cluster_id"],
+            "attr_minhash_is_head": r["attr_minhash_is_head"],
+        }
+        for r in clustered
+    ]
+
+
 def update_minhash_in_lance(source_id: int) -> int:
     """Update attr_minhash_signature, attr_minhash_cluster_id, attr_minhash_is_head.
+
+    .. deprecated::
+        F-031: Use ``compute_minhash_scores(source_id)`` and route the result
+        through ``LanceChunksIOManager`` (column mode) instead.  This function
+        is kept for backward compatibility but is no longer called from Dagster
+        tagger assets.
 
     Performs a **column-mode update** on existing rows where:
         source_id = <source_id> AND producer_asset = 'chunks'
@@ -314,6 +373,11 @@ def _minhash_update(
     where_clause: str,
 ) -> None:
     """MinHash clustering column update: fetch → sort → cluster → update.
+
+    .. deprecated::
+        F-031: Internal helper for the deprecated ``update_minhash_in_lance()``.
+        New code should use ``compute_minhash_scores()`` and route through
+        ``LanceChunksIOManager`` column mode.
 
     Fetches chunk_id and text for matching rows, sorts by chunk_id ascending,
     computes MinHash signatures and cluster assignments via _cluster_rows(), then

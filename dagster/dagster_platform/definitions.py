@@ -23,6 +23,10 @@
 #        clusters near-duplicate chunks via MinHashLSH(threshold=0.85), updates
 #        attr_minhash_signature, attr_minhash_cluster_id, attr_minhash_is_head in-place.
 #        Zero new rows. Uses helpers from minhash_tagger.py.
+# F-031: LanceChunksIOManager column mode — tagger assets (attr_quality, attr_lang,
+#        attr_minhash) now return list[dict] and route through LanceChunksIOManager
+#        column mode (D3a partial merge_insert). compute_*_scores() functions handle
+#        read-only scoring; IOManager owns the Lance write.
 
 from typing import Any
 
@@ -57,15 +61,15 @@ from dagster_platform.chunker import (
 )
 
 from dagster_platform.quality_tagger import (
-    update_quality_scores_in_lance,
+    compute_quality_scores,
 )
 
 from dagster_platform.lang_tagger import (
-    update_lang_in_lance,
+    compute_lang_scores,
 )
 
 from dagster_platform.minhash_tagger import (
-    update_minhash_in_lance,
+    compute_minhash_scores,
 )
 
 # F-012: Dynamic partition definition for source uploads.
@@ -208,25 +212,27 @@ def chunks(context: AssetExecutionContext) -> list[dict[str, Any]]:
 
 @asset(
     partitions_def=sources_partitions,
+    io_manager_key="lance_chunks_io",
     description=(
-        "Quality tagger (F-028): updates attr_quality_score and attr_quality_provider "
-        "columns on existing producer_asset='chunks' rows in Lance. Zero new rows created. "
-        "Scores each chunk by calling the internal LLM gateway (POST /api/internal/llm/completions). "
-        "attr_quality_provider is set to the model name returned by the gateway (e.g. "
-        "'claude-3-haiku-20240307' or 'mock' in CI)."
+        "Quality tagger (F-028): scores each chunk via the internal LLM gateway "
+        "(POST /api/internal/llm/completions), returns partial dicts routed through "
+        "LanceChunksIOManager column mode (F-031) which updates attr_quality_score "
+        "and attr_quality_provider columns on existing producer_asset='chunks' rows. "
+        "Zero new rows created. attr_quality_provider is the model name returned by "
+        "the gateway (e.g. 'claude-3-haiku-20240307' or 'mock' in CI)."
     ),
 )
-def attr_quality(context: AssetExecutionContext) -> MaterializeResult:
-    """Column-mode quality tagger asset (F-027).
+def attr_quality(context: AssetExecutionContext) -> list[dict[str, Any]]:
+    """Column-mode quality tagger asset (F-027 / F-031 IOManager refactor).
 
-    Steps (agreed.md §3 D2–D4):
+    Steps:
       1. Parse source_id from partition key.
-      2. Call update_quality_scores_in_lance() to update attr_quality_score and
-         attr_quality_provider on existing producer_asset='chunks' rows.
-         Returns row count (zero if no chunks exist for this source — no-op).
-      3. Return MaterializeResult with source_id and rows_updated metadata.
+      2. Call compute_quality_scores(source_id) — reads chunk texts from Lance,
+         scores via LLM gateway, returns partial dicts (no Lance write).
+      3. Add asset-level metadata via context.add_output_metadata().
+      4. Return rows — LanceChunksIOManager column mode handles the Lance write.
 
-    Does NOT use io_manager_key — this is a column-mode update, not a row insert.
+    Does NOT call update_quality_scores_in_lance() (deprecated in F-031).
     """
     partition_key = context.partition_key
     source_id = int(partition_key.removeprefix("src_"))
@@ -236,47 +242,50 @@ def attr_quality(context: AssetExecutionContext) -> MaterializeResult:
         source_id,
     )
 
-    row_count = update_quality_scores_in_lance(source_id)
+    rows = compute_quality_scores(source_id)
     context.log.info(
-        "attr_quality: updated %d row(s) for source_id=%d",
-        row_count,
+        "attr_quality: scored %d chunk(s) for source_id=%d",
+        len(rows),
         source_id,
     )
 
-    if row_count == 0:
+    if len(rows) == 0:
         context.log.warning(
-            "attr_quality: zero rows updated for source_id=%d — "
+            "attr_quality: zero rows scored for source_id=%d — "
             "chunks may not yet exist for this source",
             source_id,
         )
 
-    return MaterializeResult(
-        metadata={
+    context.add_output_metadata(
+        {
             "source_id": MetadataValue.int(source_id),
-            "rows_updated": MetadataValue.int(row_count),
+            "chunk_count": MetadataValue.int(len(rows)),
         }
     )
+    return rows
 
 
 @asset(
     partitions_def=sources_partitions,
+    io_manager_key="lance_chunks_io",
     description=(
-        "Lang tagger (F-029): updates attr_lang_code and attr_lang_confidence "
-        "columns on existing producer_asset='chunks' rows in Lance using fasttext "
-        "lid.176.ftz. Zero new rows created."
+        "Lang tagger (F-029): detects language of each chunk using fasttext "
+        "lid.176.ftz, returns partial dicts routed through LanceChunksIOManager "
+        "column mode (F-031) which updates attr_lang_code and attr_lang_confidence "
+        "columns on existing producer_asset='chunks' rows. Zero new rows created."
     ),
 )
-def attr_lang(context: AssetExecutionContext) -> MaterializeResult:
-    """Column-mode language tagger asset (F-029).
+def attr_lang(context: AssetExecutionContext) -> list[dict[str, Any]]:
+    """Column-mode language tagger asset (F-029 / F-031 IOManager refactor).
 
-    Steps (agreed.md §3 D12):
+    Steps:
       1. Parse source_id from partition key.
-      2. Call update_lang_in_lance() to update attr_lang_code and
-         attr_lang_confidence on existing producer_asset='chunks' rows.
-         Returns row count (zero if no chunks exist for this source — no-op).
-      3. Return MaterializeResult with source_id and rows_updated metadata.
+      2. Call compute_lang_scores(source_id) — reads chunk texts from Lance,
+         detects language via fasttext, returns partial dicts (no Lance write).
+      3. Add asset-level metadata via context.add_output_metadata().
+      4. Return rows — LanceChunksIOManager column mode handles the Lance write.
 
-    Does NOT use io_manager_key — this is a column-mode update, not a row insert.
+    Does NOT call update_lang_in_lance() (deprecated in F-031).
     """
     partition_key = context.partition_key
     source_id = int(partition_key.removeprefix("src_"))
@@ -286,48 +295,53 @@ def attr_lang(context: AssetExecutionContext) -> MaterializeResult:
         source_id,
     )
 
-    row_count = update_lang_in_lance(source_id)
+    rows = compute_lang_scores(source_id)
     context.log.info(
-        "attr_lang: updated %d row(s) for source_id=%d",
-        row_count,
+        "attr_lang: detected language for %d chunk(s) for source_id=%d",
+        len(rows),
         source_id,
     )
 
-    if row_count == 0:
+    if len(rows) == 0:
         context.log.warning(
-            "attr_lang: zero rows updated for source_id=%d — "
+            "attr_lang: zero rows detected for source_id=%d — "
             "chunks may not yet exist",
             source_id,
         )
 
-    return MaterializeResult(
-        metadata={
+    context.add_output_metadata(
+        {
             "source_id": MetadataValue.int(source_id),
-            "rows_updated": MetadataValue.int(row_count),
+            "chunk_count": MetadataValue.int(len(rows)),
         }
     )
+    return rows
 
 
 @asset(
     partitions_def=sources_partitions,
+    io_manager_key="lance_chunks_io",
     description=(
-        "MinHash dedup tagger (F-030): updates attr_minhash_signature, "
-        "attr_minhash_cluster_id, attr_minhash_is_head in chunks table. "
-        "Zero new rows created. Column-mode update only."
+        "MinHash dedup tagger (F-030): computes MinHash signatures and clusters "
+        "near-duplicate chunks, returns partial dicts routed through "
+        "LanceChunksIOManager column mode (F-031) which updates "
+        "attr_minhash_signature, attr_minhash_cluster_id, attr_minhash_is_head "
+        "in chunks table. Zero new rows created. Column-mode update only."
     ),
 )
-def attr_minhash(context: AssetExecutionContext) -> MaterializeResult:
-    """Column-mode MinHash near-duplicate tagger asset (F-030).
+def attr_minhash(context: AssetExecutionContext) -> list[dict[str, Any]]:
+    """Column-mode MinHash near-duplicate tagger asset (F-030 / F-031 IOManager refactor).
 
-    Steps (agreed.md §3 D2):
+    Steps:
       1. Parse source_id from partition key.
-      2. Call update_minhash_in_lance() to fetch all chunk rows, sort by chunk_id,
-         compute MinHash signatures and LSH-based cluster assignments, then update
-         attr_minhash_signature, attr_minhash_cluster_id, and attr_minhash_is_head
-         on existing producer_asset='chunks' rows. Zero new rows created.
-      3. Return MaterializeResult with source_id and rows_updated metadata.
+      2. Call compute_minhash_scores(source_id) — reads chunk texts from Lance,
+         computes MinHash signatures and LSH-based cluster assignments (sorted by
+         chunk_id ascending for deterministic labels), returns partial dicts
+         (no Lance write).
+      3. Add asset-level metadata via context.add_output_metadata().
+      4. Return rows — LanceChunksIOManager column mode handles the Lance write.
 
-    Does NOT use io_manager_key — this is a column-mode update, not a row insert.
+    Does NOT call update_minhash_in_lance() (deprecated in F-031).
     """
     partition_key = context.partition_key
     source_id = int(partition_key.removeprefix("src_"))
@@ -337,26 +351,27 @@ def attr_minhash(context: AssetExecutionContext) -> MaterializeResult:
         source_id,
     )
 
-    row_count = update_minhash_in_lance(source_id)
+    rows = compute_minhash_scores(source_id)
     context.log.info(
-        "attr_minhash: updated %d row(s) for source_id=%d",
-        row_count,
+        "attr_minhash: computed minhash for %d chunk(s) for source_id=%d",
+        len(rows),
         source_id,
     )
 
-    if row_count == 0:
+    if len(rows) == 0:
         context.log.warning(
-            "attr_minhash: zero rows updated for source_id=%d — "
+            "attr_minhash: zero rows computed for source_id=%d — "
             "chunks may not yet exist",
             source_id,
         )
 
-    return MaterializeResult(
-        metadata={
+    context.add_output_metadata(
+        {
             "source_id": MetadataValue.int(source_id),
-            "rows_updated": MetadataValue.int(row_count),
+            "chunk_count": MetadataValue.int(len(rows)),
         }
     )
+    return rows
 
 
 @op
