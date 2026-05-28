@@ -37,6 +37,10 @@ dependencies = [
     # Added S023-F-023: Lance columnar store for global chunks table.
     # pyarrow + lance come as transitive deps — do NOT list separately.
     "lancedb==0.30.2",
+    # Added S034-F-034: numpy for equal-width histogram binning in chunk distribution
+    # endpoint.  numpy is a transitive dep of pyarrow, but listed explicitly here to
+    # ensure version-pinning stability and to make the dependency contract explicit.
+    "numpy>=1.24",
 ]
 
 [tool.hatch.build.targets.wheel]

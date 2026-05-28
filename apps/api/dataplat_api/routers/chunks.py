@@ -1,15 +1,20 @@
-"""Chunks router — S032-F-032 / S033-F-033.
+"""Chunks router — S032-F-032 / S033-F-033 / S034-F-034.
 
 POST /api/chunks/query   — execute a DataFusion SQL filter on the Lance chunks
                            table and return matching chunks with a total count.
 POST /api/chunks/aggregate — compute grouped statistics over the Lance chunks
                              table using PyArrow group_by.
+POST /api/chunks/distribution — compute a value distribution histogram for one
+                                column (numeric or categorical), auto-detected
+                                from the PyArrow schema.
 """
 from __future__ import annotations  # N2 fix
 
 import asyncio
 import logging
+from typing import Literal
 
+import numpy as np
 import pyarrow as pa
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -18,6 +23,8 @@ from dataplat_api.db.models import User
 from dataplat_api.schemas.chunks import (
     ChunkAggregateRequest,
     ChunkAggregateResponse,
+    ChunkDistributionRequest,
+    ChunkDistributionResponse,
     ChunkQueryRequest,
     ChunkQueryResponse,
     ChunkRead,
@@ -206,3 +213,128 @@ async def aggregate_chunks(
         ) from exc
 
     return ChunkAggregateResponse(groups=groups)
+
+
+# ── Distribution helpers ───────────────────────────────────────────────────────
+
+
+def _compute_numeric_distribution(
+    col_array: pa.ChunkedArray,
+    bins: int,
+) -> list[dict]:
+    """Compute equal-width histogram buckets for a numeric column.
+
+    Returns [] if the column contains no non-null values.
+    Returns a single bucket [val, val] if all values are identical.
+    Null values are excluded before binning.
+    """
+    valid = col_array.drop_null()
+    if len(valid) == 0:
+        return []
+
+    values = np.array(valid.to_pylist(), dtype=np.float64)
+    col_min = float(values.min())
+    col_max = float(values.max())
+
+    # numpy.histogram raises ValueError when range=(v, v); handle separately.
+    if col_min == col_max:
+        return [{"range": [col_min, col_max], "count": int(len(values))}]
+
+    counts, edges = np.histogram(values, bins=bins)
+    return [
+        {"range": [float(edges[i]), float(edges[i + 1])], "count": int(counts[i])}
+        for i in range(len(counts))
+    ]
+
+
+def _compute_categorical_distribution(
+    tbl: pa.Table,
+    column: str,
+) -> list[dict]:
+    """Compute value counts for a categorical (string) column.
+
+    Returns [] if tbl has 0 rows.
+    Null values form their own bucket: {"value": null, "count": N}.
+    Results are sorted by count descending.
+    """
+    if len(tbl) == 0:
+        return []
+
+    result = tbl.group_by(column).aggregate([([], "count_all")])
+    # Rename PyArrow output column "count_all" → "count".
+    new_names = ["count" if n == "count_all" else n for n in result.column_names]
+    result = result.rename_columns(new_names)
+    result = result.sort_by([("count", "descending")])
+
+    rows = result.to_pylist()
+    return [{"value": row[column], "count": row["count"]} for row in rows]
+
+
+@router.post("/distribution", response_model=ChunkDistributionResponse)
+async def distribution_chunks(
+    body: ChunkDistributionRequest,
+    current_user: User = Depends(get_current_user),
+) -> ChunkDistributionResponse:
+    """Compute a value distribution histogram for one column.
+
+    Auth required (F-008).  No per-user row scoping (§11.6 deferred).
+
+    Column type is auto-detected from the PyArrow schema:
+      - Floating-point / integer → numeric equal-width histogram (bins buckets).
+      - String (utf8/large_utf8) → categorical value counts, count descending.
+      - Other types (bool, list, timestamp, …) → HTTP 400.
+
+    All matching rows for the target column are loaded into process memory —
+    callers should apply a filter to avoid full-table scans on large datasets.
+    Post-MVP: push aggregation to DuckDB/DataFusion SQL.
+    """
+
+    def _execute() -> tuple[Literal["numeric", "categorical"], list[dict]]:
+        """Synchronous Lance I/O + distribution computation, via asyncio.to_thread()."""
+        try:
+            table = get_or_create_chunks_table()
+            q = table.search()
+            if body.filter:
+                q = q.where(body.filter)
+            q = q.select([body.column])
+            # No .limit() — all matching rows are needed for the histogram.
+            arrow_tbl = q.to_arrow()
+        except Exception as exc:
+            raise LanceQueryError(str(exc)) from exc
+
+        try:
+            col_type = arrow_tbl.schema.field(body.column).type
+            dist_type: Literal["numeric", "categorical"]
+            if pa.types.is_floating(col_type) or pa.types.is_integer(col_type):
+                dist_type = "numeric"
+                buckets = _compute_numeric_distribution(
+                    arrow_tbl.column(body.column), body.bins
+                )
+            elif pa.types.is_string(col_type) or pa.types.is_large_string(col_type):
+                dist_type = "categorical"
+                buckets = _compute_categorical_distribution(arrow_tbl, body.column)
+            else:
+                raise LanceQueryError(
+                    f"Column {body.column!r} has unsupported type {col_type!r}; "
+                    f"supported: floating-point, integer, string"
+                )
+        except LanceQueryError:
+            raise  # re-raise without wrapping
+        except Exception as exc:
+            raise LanceQueryError(f"Distribution error: {exc}") from exc
+
+        return dist_type, buckets
+
+    try:
+        dist_type, buckets = await asyncio.to_thread(_execute)
+    except LanceQueryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Lance query error: {exc}",
+        ) from exc
+
+    return ChunkDistributionResponse(
+        column=body.column,
+        type=dist_type,
+        buckets=buckets,
+    )

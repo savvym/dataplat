@@ -1,4 +1,4 @@
-"""Chunk query schemas — S032-F-032 / S033-F-033.
+"""Chunk query schemas — S032-F-032 / S033-F-033 / S034-F-034.
 
 Schemas:
   - ChunkQueryRequest: body for POST /api/chunks/query.
@@ -6,11 +6,13 @@ Schemas:
   - ChunkQueryResponse: paginated response {items, total}.
   - ChunkAggregateRequest: body for POST /api/chunks/aggregate.
   - ChunkAggregateResponse: grouped statistics response {groups}.
+  - ChunkDistributionRequest: body for POST /api/chunks/distribution.
+  - ChunkDistributionResponse: histogram/categorical distribution response {column, type, buckets}.
 """
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -128,3 +130,45 @@ class ChunkAggregateResponse(BaseModel):
     """
 
     groups: list[dict[str, Any]]
+
+
+class ChunkDistributionRequest(BaseModel):
+    """Request body for POST /api/chunks/distribution.
+
+    filter  — DataFusion SQL predicate fragment applied before computing the
+              distribution (e.g. "source_id = 42").
+              None / omitted means all rows.  Max 1000 chars.
+    column  — Name of the Lance column to compute the distribution for.
+              Must be a valid CHUNKS_SCHEMA column name; unknown names cause a
+              400 (DataFusion parse error at scan time).
+              Supported types: floating-point, integer, string (utf8/large_utf8).
+              Unsupported types (bool, list, timestamp, …) cause a 400.
+              NOTE: all integer columns (token_count, source_id,
+              attr_minhash_cluster_id) are treated as numeric and binned as a
+              histogram. Callers wanting categorical treatment of an integer
+              column should use POST /api/chunks/aggregate with group_by instead.
+    bins    — Number of equal-width histogram buckets for numeric columns
+              (default 10, range 1–100).  Silently ignored for categorical
+              columns.
+    """
+
+    filter: str | None = Field(default=None, max_length=1000)
+    column: str = Field(..., min_length=1, max_length=128)
+    bins: int = Field(default=10, ge=1, le=100)
+
+
+class ChunkDistributionResponse(BaseModel):
+    """Response for POST /api/chunks/distribution.
+
+    column  — Echo of the requested column name.
+    type    — "numeric" or "categorical", auto-detected from the PyArrow schema.
+    buckets — List of bucket dicts; shape depends on type:
+                Numeric:     {"range": [lower: float, upper: float], "count": int}
+                Categorical: {"value": str | None, "count": int}
+              Empty list when no non-null values exist (numeric) or 0 rows match
+              the filter (both types).
+    """
+
+    column: str
+    type: Literal["numeric", "categorical"]
+    buckets: list[dict[str, Any]]

@@ -843,6 +843,53 @@
           }
         ]
       }
+    },
+    "/api/chunks/distribution": {
+      "post": {
+        "tags": [
+          "chunks"
+        ],
+        "summary": "Distribution Chunks",
+        "description": "Compute a value distribution histogram for one column.\n\nAuth required (F-008).  No per-user row scoping (\u00a711.6 deferred).\n\nColumn type is auto-detected from the PyArrow schema:\n  - Floating-point / integer \u2192 numeric equal-width histogram (bins buckets).\n  - String (utf8/large_utf8) \u2192 categorical value counts, count descending.\n  - Other types (bool, list, timestamp, \u2026) \u2192 HTTP 400.\n\nAll matching rows for the target column are loaded into process memory \u2014\ncallers should apply a filter to avoid full-table scans on large datasets.\nPost-MVP: push aggregation to DuckDB/DataFusion SQL.",
+        "operationId": "distribution_chunks_api_chunks_distribution_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChunkDistributionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChunkDistributionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -984,6 +1031,73 @@
         ],
         "title": "ChunkAggregateResponse",
         "description": "Response for POST /api/chunks/aggregate.\n\ngroups \u2014 one dict per distinct value of group_by.  Each dict contains:\n           - the group_by column key/value pair\n           - one key per requested metric, named as follows:\n               \"count\"          metric \u2192 key \"count\"\n               \"op:COLNAME\"     metric \u2192 key \"{op}_{colname}\"\n                                e.g. \"sum:attr_quality_score\"\n                                     \u2192 key \"sum_attr_quality_score\"\nNull-key groups: if rows have NULL in the group_by column, they form a\nseparate group with key value null. The \"count\" metric correctly counts\nall rows in that group (using PyArrow's count_all).\n\nExample (group_by=\"attr_lang_code\", metrics=[\"count\"]):\n  {\"groups\": [\n    {\"attr_lang_code\": \"zh\", \"count\": 42},\n    {\"attr_lang_code\": \"en\", \"count\": 17},\n  ]}"
+      },
+      "ChunkDistributionRequest": {
+        "properties": {
+          "filter": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter"
+          },
+          "column": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Column"
+          },
+          "bins": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Bins",
+            "default": 10
+          }
+        },
+        "type": "object",
+        "required": [
+          "column"
+        ],
+        "title": "ChunkDistributionRequest",
+        "description": "Request body for POST /api/chunks/distribution.\n\nfilter  \u2014 DataFusion SQL predicate fragment applied before computing the\n          distribution (e.g. \"source_id = 42\").\n          None / omitted means all rows.  Max 1000 chars.\ncolumn  \u2014 Name of the Lance column to compute the distribution for.\n          Must be a valid CHUNKS_SCHEMA column name; unknown names cause a\n          400 (DataFusion parse error at scan time).\n          Supported types: floating-point, integer, string (utf8/large_utf8).\n          Unsupported types (bool, list, timestamp, \u2026) cause a 400.\n          NOTE: all integer columns (token_count, source_id,\n          attr_minhash_cluster_id) are treated as numeric and binned as a\n          histogram. Callers wanting categorical treatment of an integer\n          column should use POST /api/chunks/aggregate with group_by instead.\nbins    \u2014 Number of equal-width histogram buckets for numeric columns\n          (default 10, range 1\u2013100).  Silently ignored for categorical\n          columns."
+      },
+      "ChunkDistributionResponse": {
+        "properties": {
+          "column": {
+            "type": "string",
+            "title": "Column"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "numeric",
+              "categorical"
+            ],
+            "title": "Type"
+          },
+          "buckets": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Buckets"
+          }
+        },
+        "type": "object",
+        "required": [
+          "column",
+          "type",
+          "buckets"
+        ],
+        "title": "ChunkDistributionResponse",
+        "description": "Response for POST /api/chunks/distribution.\n\ncolumn  \u2014 Echo of the requested column name.\ntype    \u2014 \"numeric\" or \"categorical\", auto-detected from the PyArrow schema.\nbuckets \u2014 List of bucket dicts; shape depends on type:\n            Numeric:     {\"range\": [lower: float, upper: float], \"count\": int}\n            Categorical: {\"value\": str | None, \"count\": int}\n          Empty list when no non-null values exist (numeric) or 0 rows match\n          the filter (both types)."
       },
       "ChunkQueryRequest": {
         "properties": {
