@@ -20,7 +20,7 @@
     "category": "infra",
     "phase": 1,
     "priority": "P0",
-    "description": "Postgres baseline migration runs cleanly, creating all business tables defined in §4.1 (users, source_collection, source, document_variant, operator, recipe, dataset, run)",
+    "description": "Postgres baseline migration runs cleanly, creating all business tables defined in \u00a74.1 (users, source_collection, source, document_variant, operator, recipe, dataset, run)",
     "verification": [
       "Running the migration command exits 0 with no errors",
       "`\\dt` in psql lists all 8 expected tables",
@@ -357,7 +357,7 @@
     "category": "core",
     "phase": 1,
     "priority": "P0",
-    "description": "Lance global chunks table is initialized with the correct Arrow schema (as defined in §4.2) on first use; the table is created at s3://lance/chunks/",
+    "description": "Lance global chunks table is initialized with the correct Arrow schema (as defined in \u00a74.2) on first use; the table is created at s3://lance/chunks/",
     "verification": [
       "After system startup and first chunking run, `lance.dataset('s3://lance/chunks/').schema` contains all required fields including chunk_id, source_id, text, token_count, attr_quality_score, attr_lang_code, attr_minhash_signature",
       "The table path is accessible via the MinIO SDK"
@@ -559,7 +559,7 @@
     "depends_on": [
       "F-032"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "F-036",
@@ -859,7 +859,7 @@
     "verification": [
       "After a successful extraction, MinIO at s3://documents/{source_id}/extract_mineru/ contains doc.docling.json and manifest.json",
       "If the MinIO write fails mid-way, no partial document_variant row is written to Postgres (or it is cleaned up)",
-      "manifest.json contains source_refs and version info as described in §4.3"
+      "manifest.json contains source_refs and version info as described in \u00a74.3"
     ],
     "depends_on": [
       "F-019"
@@ -1204,7 +1204,7 @@
     "category": "api",
     "phase": 1,
     "priority": "P1",
-    "description": "OpenAPI spec is generated automatically by FastAPI and is accessible at GET /api/openapi.json; the spec covers all routes defined in §9.1",
+    "description": "OpenAPI spec is generated automatically by FastAPI and is accessible at GET /api/openapi.json; the spec covers all routes defined in \u00a79.1",
     "verification": [
       "GET /api/openapi.json returns 200 with a valid OpenAPI 3.x JSON object",
       "The spec includes paths for /api/sources/upload, /api/chunks/query, /api/recipes, /api/datasets, /api/runs, /api/operators, /api/ws/runs",
@@ -1336,7 +1336,7 @@
     "category": "core",
     "phase": 1,
     "priority": "P1",
-    "description": "Recipe schema validation: POST /api/recipes and PUT /api/recipes/{id} validate the recipe definition against the Recipe DSL schema (§7.1); invalid definitions are rejected with 422 and descriptive error messages",
+    "description": "Recipe schema validation: POST /api/recipes and PUT /api/recipes/{id} validate the recipe definition against the Recipe DSL schema (\u00a77.1); invalid definitions are rejected with 422 and descriptive error messages",
     "verification": [
       "POST /api/recipes with a definition missing required 'sources' field returns 422 with an error pointing to the missing field",
       "POST /api/recipes with an invalid filter SQL string returns 422",
@@ -1448,7 +1448,7 @@
     "category": "api",
     "phase": 1,
     "priority": "P1",
-    "description": "Source file type validation: POST /api/sources/upload rejects non-PDF files with 422 (in MVP, only PDF is supported per §12.1)",
+    "description": "Source file type validation: POST /api/sources/upload rejects non-PDF files with 422 (in MVP, only PDF is supported per \u00a712.1)",
     "verification": [
       "Uploading a .txt file returns 422 with message indicating only PDF is supported",
       "Uploading a .docx file returns 422",
@@ -1706,7 +1706,7 @@
     "category": "core",
     "phase": 2,
     "priority": "P2",
-    "description": "Advanced sampling: the recipe materializer supports stratified sampling per source collection with per_source_caps as defined in the Recipe DSL §7.1",
+    "description": "Advanced sampling: the recipe materializer supports stratified sampling per source collection with per_source_caps as defined in the Recipe DSL \u00a77.1",
     "verification": [
       "A recipe with per_source_caps: {1: 100} produces a dataset where at most 100 samples come from collection 1",
       "stratified strategy produces proportional representation of sources"
