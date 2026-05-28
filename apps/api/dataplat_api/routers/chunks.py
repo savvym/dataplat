@@ -16,7 +16,7 @@ from typing import Literal
 
 import numpy as np
 import pyarrow as pa
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Path as FPath, status
 
 from dataplat_api.auth.dependencies import get_current_user
 from dataplat_api.db.models import User
@@ -338,3 +338,47 @@ async def distribution_chunks(
         type=dist_type,
         buckets=buckets,
     )
+
+
+@router.get("/{chunk_id}", response_model=ChunkRead)
+async def get_chunk_by_id(
+    chunk_id: str = FPath(..., max_length=256),
+    current_user: User = Depends(get_current_user),
+) -> ChunkRead:
+    """Fetch a single chunk by its chunk_id.
+
+    Auth required (F-008).  No per-user row scoping (§11.6 deferred).
+
+    Returns HTTP 404 if no chunk with the given chunk_id exists in the Lance
+    table.  Returns HTTP 400 if Lance/DataFusion raises any error.
+    """
+
+    def _execute() -> dict | None:
+        try:
+            table = get_or_create_chunks_table()
+            safe_id = chunk_id.replace("'", "''")
+            arrow_tbl = (
+                table.search()
+                .where(f"chunk_id = '{safe_id}'")
+                .limit(1)
+                .to_arrow()
+            )
+            rows = arrow_tbl.to_pylist()
+            return rows[0] if rows else None
+        except Exception as exc:
+            raise LanceQueryError(str(exc)) from exc
+
+    try:
+        row = await asyncio.to_thread(_execute)
+    except LanceQueryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Lance query error: {exc}",
+        ) from exc
+
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chunk {chunk_id!r} not found",
+        )
+    return ChunkRead(**row)

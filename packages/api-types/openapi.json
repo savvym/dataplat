@@ -890,6 +890,55 @@
           }
         ]
       }
+    },
+    "/api/chunks/{chunk_id}": {
+      "get": {
+        "tags": [
+          "chunks"
+        ],
+        "summary": "Get Chunk By Id",
+        "description": "Fetch a single chunk by its chunk_id.\n\nAuth required (F-008).  No per-user row scoping (\u00a711.6 deferred).\n\nReturns HTTP 404 if no chunk with the given chunk_id exists in the Lance\ntable.  Returns HTTP 400 if Lance/DataFusion raises any error.",
+        "operationId": "get_chunk_by_id_api_chunks__chunk_id__get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "chunk_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 256,
+              "title": "Chunk Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChunkRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
