@@ -1,13 +1,16 @@
-"""Chunk query schemas — S032-F-032.
+"""Chunk query schemas — S032-F-032 / S033-F-033.
 
 Schemas:
   - ChunkQueryRequest: body for POST /api/chunks/query.
   - ChunkRead: one chunk row, all 24 CHUNKS_SCHEMA fields (all nullable except chunk_id).
   - ChunkQueryResponse: paginated response {items, total}.
+  - ChunkAggregateRequest: body for POST /api/chunks/aggregate.
+  - ChunkAggregateResponse: grouped statistics response {groups}.
 """
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -78,3 +81,50 @@ class ChunkQueryResponse(BaseModel):
 
     items: list[ChunkRead]
     total: int
+
+
+class ChunkAggregateRequest(BaseModel):
+    """Request body for POST /api/chunks/aggregate.
+
+    filter   — DataFusion SQL predicate fragment applied to the Lance chunks
+               table before grouping (e.g. "source_id = 42").
+               None / omitted means group over all rows.  Max 1000 chars.
+    group_by — Name of a single Lance column to group by (e.g. "attr_lang_code",
+               "producer_asset").  Must be a valid CHUNKS_SCHEMA column name;
+               unknown names cause a 400 at PyArrow grouping time.
+    metrics  — Non-empty list of metric specifiers (max 20).  Two forms:
+                 "count"          — count rows per group (no target column needed)
+                 "op:COLNAME"     — apply op ∈ {sum, mean, min, max} to COLNAME
+                                    e.g. "sum:attr_quality_score"
+               Unknown ops or columns produce HTTP 400.
+               NOTE: PyArrow silently upcasts integer columns to float for
+               "mean"; "min"/"max" on string columns returns lexicographic order.
+    """
+
+    filter: str | None = Field(default=None, max_length=1000)
+    group_by: str = Field(..., min_length=1, max_length=128)
+    metrics: list[str] = Field(..., min_length=1, max_length=20)
+
+
+class ChunkAggregateResponse(BaseModel):
+    """Response for POST /api/chunks/aggregate.
+
+    groups — one dict per distinct value of group_by.  Each dict contains:
+               - the group_by column key/value pair
+               - one key per requested metric, named as follows:
+                   "count"          metric → key "count"
+                   "op:COLNAME"     metric → key "{op}_{colname}"
+                                    e.g. "sum:attr_quality_score"
+                                         → key "sum_attr_quality_score"
+    Null-key groups: if rows have NULL in the group_by column, they form a
+    separate group with key value null. The "count" metric correctly counts
+    all rows in that group (using PyArrow's count_all).
+
+    Example (group_by="attr_lang_code", metrics=["count"]):
+      {"groups": [
+        {"attr_lang_code": "zh", "count": 42},
+        {"attr_lang_code": "en", "count": 17},
+      ]}
+    """
+
+    groups: list[dict[str, Any]]

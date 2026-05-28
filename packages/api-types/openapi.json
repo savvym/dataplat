@@ -796,6 +796,53 @@
           }
         ]
       }
+    },
+    "/api/chunks/aggregate": {
+      "post": {
+        "tags": [
+          "chunks"
+        ],
+        "summary": "Aggregate Chunks",
+        "description": "Compute grouped statistics over the Lance chunks table.\n\nAuth required (F-008).  No per-user row scoping (\u00a711.6 deferred).\n\nAll matching rows (subject to filter) are loaded into process memory for\ngrouping \u2014 callers should apply a filter to avoid full-table scans on\nlarge datasets.  Post-MVP: push GROUP BY to DuckDB/DataFusion SQL.",
+        "operationId": "aggregate_chunks_api_chunks_aggregate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChunkAggregateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChunkAggregateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -881,6 +928,62 @@
           "file"
         ],
         "title": "Body_upload_source_api_sources_upload_post"
+      },
+      "ChunkAggregateRequest": {
+        "properties": {
+          "filter": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter"
+          },
+          "group_by": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Group By"
+          },
+          "metrics": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Metrics"
+          }
+        },
+        "type": "object",
+        "required": [
+          "group_by",
+          "metrics"
+        ],
+        "title": "ChunkAggregateRequest",
+        "description": "Request body for POST /api/chunks/aggregate.\n\nfilter   \u2014 DataFusion SQL predicate fragment applied to the Lance chunks\n           table before grouping (e.g. \"source_id = 42\").\n           None / omitted means group over all rows.  Max 1000 chars.\ngroup_by \u2014 Name of a single Lance column to group by (e.g. \"attr_lang_code\",\n           \"producer_asset\").  Must be a valid CHUNKS_SCHEMA column name;\n           unknown names cause a 400 at PyArrow grouping time.\nmetrics  \u2014 Non-empty list of metric specifiers (max 20).  Two forms:\n             \"count\"          \u2014 count rows per group (no target column needed)\n             \"op:COLNAME\"     \u2014 apply op \u2208 {sum, mean, min, max} to COLNAME\n                                e.g. \"sum:attr_quality_score\"\n           Unknown ops or columns produce HTTP 400.\n           NOTE: PyArrow silently upcasts integer columns to float for\n           \"mean\"; \"min\"/\"max\" on string columns returns lexicographic order."
+      },
+      "ChunkAggregateResponse": {
+        "properties": {
+          "groups": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Groups"
+          }
+        },
+        "type": "object",
+        "required": [
+          "groups"
+        ],
+        "title": "ChunkAggregateResponse",
+        "description": "Response for POST /api/chunks/aggregate.\n\ngroups \u2014 one dict per distinct value of group_by.  Each dict contains:\n           - the group_by column key/value pair\n           - one key per requested metric, named as follows:\n               \"count\"          metric \u2192 key \"count\"\n               \"op:COLNAME\"     metric \u2192 key \"{op}_{colname}\"\n                                e.g. \"sum:attr_quality_score\"\n                                     \u2192 key \"sum_attr_quality_score\"\nNull-key groups: if rows have NULL in the group_by column, they form a\nseparate group with key value null. The \"count\" metric correctly counts\nall rows in that group (using PyArrow's count_all).\n\nExample (group_by=\"attr_lang_code\", metrics=[\"count\"]):\n  {\"groups\": [\n    {\"attr_lang_code\": \"zh\", \"count\": 42},\n    {\"attr_lang_code\": \"en\", \"count\": 17},\n  ]}"
       },
       "ChunkQueryRequest": {
         "properties": {
