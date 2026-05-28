@@ -102,3 +102,4 @@ A sprint is `done` iff:
 - Never bypass `make codegen` after API changes.
 - Never invent a feature not in `spec/feature_list.json` without updating it (with human approval) first.
 - Before any sub-agent call, write a one-line WHY entry in `claude-progress.txt`.
+- **Always `git push` after finishing work** (after every sprint close, after every commit that concludes a task).
