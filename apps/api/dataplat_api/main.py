@@ -15,6 +15,7 @@ from dataplat_api.dagster.gateway import DagsterGateway
 from dataplat_api.db.session import engine
 from dataplat_api.routers.admin import router as admin_router
 from dataplat_api.routers.auth import router as auth_router
+from dataplat_api.routers.chunks import router as chunks_router
 from dataplat_api.routers.documents import router as documents_router
 from dataplat_api.routers.health import router as health_router
 from dataplat_api.routers.operators import router as operators_router
@@ -52,5 +53,6 @@ app.include_router(auth_router)
 app.include_router(documents_router)
 app.include_router(sources_router)
 app.include_router(operators_router)
+app.include_router(chunks_router)
 # F-028: Internal LLM gateway — excluded from public OpenAPI spec (include_in_schema=False on router).
 app.include_router(llm_router)

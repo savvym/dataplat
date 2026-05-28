@@ -749,6 +749,53 @@
           }
         }
       }
+    },
+    "/api/chunks/query": {
+      "post": {
+        "tags": [
+          "chunks"
+        ],
+        "summary": "Query Chunks",
+        "description": "Execute a DataFusion SQL filter on the Lance chunks table.\n\nAuth required (F-008).\n\nIMPORTANT \u2014 no per-user row scoping:\n  The handler requires a valid bearer token but does NOT inject owner-scoping\n  into the Lance filter.  Callers are responsible for scoping via the filter\n  field (e.g. \"source_id = 42\").  Repository-level ACL on Lance is deferred\n  to post-MVP (design doc \u00a711.6).\n\nReturns:\n  items \u2014 up to `limit` matching chunk rows (all 24 fields; unselected\n          fields are None when `columns` is specified).\n  total \u2014 count of ALL rows matching the filter (ignores limit/offset).",
+        "operationId": "query_chunks_api_chunks_query_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChunkQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChunkQueryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -834,6 +881,352 @@
           "file"
         ],
         "title": "Body_upload_source_api_sources_upload_post"
+      },
+      "ChunkQueryRequest": {
+        "properties": {
+          "filter": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter"
+          },
+          "columns": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Columns"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "ChunkQueryRequest",
+        "description": "Request body for POST /api/chunks/query.\n\nfilter   \u2014 DataFusion SQL predicate fragment applied to the Lance chunks\n           table (e.g. \"source_id = 42\", \"attr_quality_score > 0.8\").\n           None / omitted means no filter (return all rows, subject to\n           limit/offset).  Max 1000 chars.\ncolumns  \u2014 Optional list of column names to project.  None = all 24 columns.\n           Unknown column names cause a 400 (DataFusion parse error).\nlimit    \u2014 Max rows per page (1\u20131000, default 100).\noffset   \u2014 Row offset for pagination (default 0)."
+      },
+      "ChunkQueryResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ChunkRead"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "ChunkQueryResponse",
+        "description": "Paginated response for POST /api/chunks/query."
+      },
+      "ChunkRead": {
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "source_collection_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Collection Id"
+          },
+          "producer_asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Producer Asset"
+          },
+          "producer_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Producer Version"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "token_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Count"
+          },
+          "docling_refs": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Docling Refs"
+          },
+          "source_refs": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Refs"
+          },
+          "augmented_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Augmented From"
+          },
+          "augmenter_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Augmenter Id"
+          },
+          "augmenter_config_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Augmenter Config Hash"
+          },
+          "attr_quality_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attr Quality Score"
+          },
+          "attr_quality_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attr Quality Provider"
+          },
+          "attr_lang_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attr Lang Code"
+          },
+          "attr_lang_confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attr Lang Confidence"
+          },
+          "attr_minhash_signature": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attr Minhash Signature"
+          },
+          "attr_minhash_cluster_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attr Minhash Cluster Id"
+          },
+          "attr_minhash_is_head": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attr Minhash Is Head"
+          },
+          "attr_pii_has_pii": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attr Pii Has Pii"
+          },
+          "attr_pii_categories": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attr Pii Categories"
+          },
+          "attr_embed_vector": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attr Embed Vector"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_id"
+        ],
+        "title": "ChunkRead",
+        "description": "One chunk row returned from the Lance chunks table.\n\nAll 24 CHUNKS_SCHEMA fields are present and all nullable except chunk_id.\nFields not included in a column-projection request will be None."
       },
       "CollectionListResponse": {
         "properties": {
