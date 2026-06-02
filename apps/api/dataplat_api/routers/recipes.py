@@ -1,8 +1,9 @@
-"""Recipes router — S037-F-037 + S038-F-038.
+"""Recipes router — S037-F-037 + S038-F-038 + S039-F-039.
 
 Provides:
-  GET  /api/recipes — paginated list of caller's recipes (F-038).
-  POST /api/recipes — create a recipe row (F-037).
+  GET  /api/recipes      — paginated list of caller's recipes (F-038).
+  POST /api/recipes      — create a recipe row (F-037).
+  GET  /api/recipes/{id} — full recipe detail for the authenticated caller (F-039).
 
 Auth enforcement (Depends(get_current_user)) MUST NOT be removed.
 
@@ -104,4 +105,34 @@ async def create_recipe(
                 detail="Recipe name already exists",
             )
         raise
+    return RecipeOut.model_validate(recipe)
+
+
+@router.get("/{id}", response_model=RecipeOut)
+async def get_recipe(
+    id: int,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> RecipeOut:
+    """Return the full recipe record for the given id.
+
+    Owner-scoping: combines ``id == ?`` AND ``owner_id == ?`` in one query so
+    that a non-existent id and an id owned by another user both return 404
+    (no-enumeration-leak, mirrors get_source / list_sources_by_collection).
+
+    Returns ``RecipeOut`` (all 7 fields including ``definition``).
+
+    Auth required (F-008).
+    """
+    result = await session.execute(
+        select(Recipe)
+        .where(Recipe.id == id)
+        .where(Recipe.owner_id == current_user.id)
+    )
+    recipe = result.scalar_one_or_none()
+    if recipe is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recipe not found",
+        )
     return RecipeOut.model_validate(recipe)

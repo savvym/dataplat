@@ -1060,6 +1060,54 @@
           }
         ]
       }
+    },
+    "/api/recipes/{id}": {
+      "get": {
+        "tags": [
+          "recipes"
+        ],
+        "summary": "Get Recipe",
+        "description": "Return the full recipe record for the given id.\n\nOwner-scoping: combines ``id == ?`` AND ``owner_id == ?`` in one query so\nthat a non-existent id and an id owned by another user both return 404\n(no-enumeration-leak, mirrors get_source / list_sources_by_collection).\n\nReturns ``RecipeOut`` (all 7 fields including ``definition``).\n\nAuth required (F-008).",
+        "operationId": "get_recipe_api_recipes__id__get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecipeOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
