@@ -988,6 +988,53 @@
           }
         }
       }
+    },
+    "/api/recipes": {
+      "post": {
+        "tags": [
+          "recipes"
+        ],
+        "summary": "Create Recipe",
+        "description": "Create a new recipe.\n\nCreates a recipe row in Postgres and returns the new record.\nDuplicate names return 409 (detected via the Postgres UNIQUE constraint\n``recipe_name_key``).  Auth required (F-008).\n\n``owner_id`` is set to the authenticated user's id.  ``definition`` is\nstored as-is (any JSON object); structural validation is deferred to\nsynthesis-time (F-082).",
+        "operationId": "create_recipe_api_recipes_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecipeCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecipeOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -2098,6 +2145,114 @@
         ],
         "title": "OperatorRead",
         "description": "Response schema for a single operator row.\n\nUsed by GET /api/operators (F-016).\n\nFields included per agreed.md \u00a73.4:\n  - id, name, version, category \u2014 required by F-016 V2.\n  - config_schema \u2014 required by F-016 V2; nullable (Optional[dict] in ORM).\n  - input_kind, output_kind \u2014 useful to callers composing pipelines.\n  - image \u2014 operators are identified by their container image.\n  - description \u2014 human-readable label for UI display; nullable.\n  - is_active \u2014 lets clients reason about operator availability; nullable bool.\n\nFields intentionally omitted (internal/operational details deferred to later\nsprints): output_schema, default_config, reference_url, example_input,\nexample_output, entrypoint, estimated_cost_per_unit, rate_limit_per_minute,\ncreated_at."
+      },
+      "RecipeCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "definition": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Definition"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "definition"
+        ],
+        "title": "RecipeCreate",
+        "description": "Request body for POST /api/recipes."
+      },
+      "RecipeOut": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "definition": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Definition"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "owner_id",
+          "definition",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "RecipeOut",
+        "description": "Response schema for a single recipe row.\n\nUsed by POST /api/recipes (F-037).  Returns the full record (id, name,\ndescription, owner_id, definition, created_at, updated_at) so that the\nclient has all fields in one round trip \u2014 consistent with SourceCollectionOut.\n\n``schema_template_operator_id`` is omitted for MVP; it will be added as an\noptional field in a later sprint when operator-linking semantics are defined."
       },
       "RunCreate": {
         "properties": {
