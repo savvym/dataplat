@@ -1,4 +1,4 @@
-"""Chunk query schemas — S032-F-032 / S033-F-033 / S034-F-034.
+"""Chunk query schemas — S032-F-032 / S033-F-033 / S034-F-034 / S036-F-036.
 
 Schemas:
   - ChunkQueryRequest: body for POST /api/chunks/query.
@@ -8,6 +8,8 @@ Schemas:
   - ChunkAggregateResponse: grouped statistics response {groups}.
   - ChunkDistributionRequest: body for POST /api/chunks/distribution.
   - ChunkDistributionResponse: histogram/categorical distribution response {column, type, buckets}.
+  - ChunkLineageEntry: one entry in the augmented_from chain (identity fields only).
+  - ChunkLineageResponse: response for GET /api/chunks/{id}/lineage.
 """
 from __future__ import annotations
 
@@ -15,6 +17,8 @@ from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+from dataplat_api.schemas.sources import DocumentVariantRead, SourceRead
 
 
 class ChunkQueryRequest(BaseModel):
@@ -172,3 +176,46 @@ class ChunkDistributionResponse(BaseModel):
     column: str
     type: Literal["numeric", "categorical"]
     buckets: list[dict[str, Any]]
+
+
+class ChunkLineageEntry(BaseModel):
+    """One entry in the augmented_from chain, tip-to-root order.
+
+    Fields are the identity + provenance columns from CHUNKS_SCHEMA that
+    describe *how* this chunk was produced and who its parent is.
+    source_id is included so callers can detect if multiple entries share
+    a source (all should, unless data is corrupt).
+
+    augmented_from is null on the root (original) entry — callers can
+    identify the root as lineage_chain[-1] (where augmented_from is None).
+
+    OQ-2 (deferred): _fetch_chunk currently fetches all 24 columns for every
+    chain step so a single helper serves both ChunkRead and ChunkLineageEntry
+    construction. A 7-column projection for chain steps becomes worth it when
+    chains routinely reach double-digit depth (post-MVP optimisation).
+    """
+
+    chunk_id: str
+    source_id: int | None
+    producer_asset: str | None
+    producer_version: str | None
+    augmented_from: str | None  # null on the root (original) entry
+    augmenter_id: str | None
+    augmenter_config_hash: str | None
+
+
+class ChunkLineageResponse(BaseModel):
+    """Response for GET /api/chunks/{chunk_id}/lineage (F-036).
+
+    chunk            — Full ChunkRead for the requested chunk_id.
+    source           — Source record from Postgres for the root chunk's source_id.
+    document_variant — Canonical DocumentVariant for the source, or null if none exists.
+    lineage_chain    — Ordered list of ChunkLineageEntry from the requested chunk
+                       (index 0) down to the root original chunk (last entry).
+                       Length == 1 for non-augmented chunks.
+    """
+
+    chunk: ChunkRead
+    source: SourceRead
+    document_variant: DocumentVariantRead | None
+    lineage_chain: list[ChunkLineageEntry]

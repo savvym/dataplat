@@ -1,4 +1,4 @@
-"""Chunks router — S032-F-032 / S033-F-033 / S034-F-034.
+"""Chunks router — S032-F-032 / S033-F-033 / S034-F-034 / S035-F-035 / S036-F-036.
 
 POST /api/chunks/query   — execute a DataFusion SQL filter on the Lance chunks
                            table and return matching chunks with a total count.
@@ -7,6 +7,9 @@ POST /api/chunks/aggregate — compute grouped statistics over the Lance chunks
 POST /api/chunks/distribution — compute a value distribution histogram for one
                                 column (numeric or categorical), auto-detected
                                 from the PyArrow schema.
+GET  /api/chunks/{chunk_id}/lineage — walk the augmented_from chain for a chunk
+                                      and return source + canonical document_variant.
+GET  /api/chunks/{chunk_id}         — fetch a single chunk by ID.
 """
 from __future__ import annotations  # N2 fix
 
@@ -17,18 +20,24 @@ from typing import Literal
 import numpy as np
 import pyarrow as pa
 from fastapi import APIRouter, Depends, HTTPException, Path as FPath, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataplat_api.auth.dependencies import get_current_user
-from dataplat_api.db.models import User
+from dataplat_api.db.models import DocumentVariant, Source, User
+from dataplat_api.db.session import get_session
 from dataplat_api.schemas.chunks import (
     ChunkAggregateRequest,
     ChunkAggregateResponse,
     ChunkDistributionRequest,
     ChunkDistributionResponse,
+    ChunkLineageEntry,
+    ChunkLineageResponse,
     ChunkQueryRequest,
     ChunkQueryResponse,
     ChunkRead,
 )
+from dataplat_api.schemas.sources import DocumentVariantRead, SourceRead
 from dataplat_api.storage.lance import get_or_create_chunks_table
 
 logger = logging.getLogger(__name__)
@@ -337,6 +346,207 @@ async def distribution_chunks(
         column=body.column,
         type=dist_type,
         buckets=buckets,
+    )
+
+
+@router.get("/{chunk_id}/lineage", response_model=ChunkLineageResponse)
+async def get_chunk_lineage(
+    chunk_id: str = FPath(..., max_length=256),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ChunkLineageResponse:
+    """Walk the augmented_from chain for a chunk and return source + canonical document_variant.
+
+    Auth required (F-008).  No per-user row scoping (§11.6 deferred).
+
+    Steps:
+      1. Fetch the requested chunk from Lance (asyncio.to_thread).
+      2. Walk the augmented_from chain iteratively (tip → root):
+           - Depth cap: _MAX_LINEAGE_DEPTH (32) via for/else.
+           - Cycle guard: seen_ids set detects re-entry before HTTP 500.
+           - Root check (augmented_from is None) fires BEFORE the depth cap
+             so a chain of exactly 32 valid entries still returns HTTP 200.
+      3. Fetch the source record from Postgres (async SQLAlchemy select).
+      4. Fetch the canonical document_variant for that source (async, nullable).
+      5. Return ChunkLineageResponse.
+
+    Error responses:
+      404 — chunk_id not found in Lance, or source_id not in Postgres.
+      400 — Lance/DataFusion query error.
+      500 — cycle detected, depth cap exceeded, broken augmented_from reference,
+             or null source_id on root chunk (data integrity violations).
+    """
+    _MAX_LINEAGE_DEPTH = 32  # cycle / runaway chain guard
+
+    # OQ-2 (deferred): _fetch_chunk fetches all 24 columns so a single helper
+    # serves both ChunkRead construction (step 1) and ChunkLineageEntry
+    # construction (chain steps). A minimal 7-column projection for chain steps
+    # becomes worth it when chains routinely reach double-digit depth (post-MVP).
+    def _fetch_chunk(cid: str) -> dict | None:
+        """Synchronous Lance fetch for one chunk by chunk_id.
+
+        Run via asyncio.to_thread() — sync Lance/DataFusion I/O must never block
+        the event loop.  Single-quote escape applied to cid before predicate
+        construction to prevent DataFusion injection.
+        """
+        try:
+            table = get_or_create_chunks_table()
+            safe_cid = cid.replace("'", "''")
+            arrow_tbl = (
+                table.search()
+                .where(f"chunk_id = '{safe_cid}'")
+                .select([
+                    "chunk_id", "source_id", "source_collection_id",
+                    "producer_asset", "producer_version",
+                    "text", "token_count", "docling_refs", "source_refs",
+                    "augmented_from", "augmenter_id", "augmenter_config_hash",
+                    "attr_quality_score", "attr_quality_provider",
+                    "attr_lang_code", "attr_lang_confidence",
+                    "attr_minhash_signature", "attr_minhash_cluster_id",
+                    "attr_minhash_is_head", "attr_pii_has_pii",
+                    "attr_pii_categories", "attr_embed_vector",
+                    "created_at", "updated_at",
+                ])
+                .limit(1)
+                .to_arrow()
+            )
+            rows = arrow_tbl.to_pylist()
+            return rows[0] if rows else None
+        except Exception as exc:
+            raise LanceQueryError(str(exc)) from exc
+
+    # ── Step 1: Fetch the requested chunk ─────────────────────────────────────
+    try:
+        initial_row = await asyncio.to_thread(_fetch_chunk, chunk_id)
+    except LanceQueryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Lance query error: {exc}",
+        ) from exc
+
+    if initial_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chunk {chunk_id!r} not found",
+        )
+
+    chunk_read = ChunkRead(**initial_row)
+
+    # ── Step 2: Walk augmented_from chain (tip → root) ────────────────────────
+    lineage_chain: list[ChunkLineageEntry] = []
+    seen_ids: set[str] = set()
+    current_row = initial_row
+
+    for _depth in range(_MAX_LINEAGE_DEPTH):
+        cid = current_row["chunk_id"]
+
+        # Cycle detection — check BEFORE appending to catch re-entry at any depth.
+        if cid in seen_ids:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Cycle detected in augmented_from chain at chunk_id={cid!r}",
+            )
+
+        seen_ids.add(cid)
+        lineage_chain.append(
+            ChunkLineageEntry(
+                chunk_id=cid,
+                source_id=current_row.get("source_id"),
+                producer_asset=current_row.get("producer_asset"),
+                producer_version=current_row.get("producer_version"),
+                augmented_from=current_row.get("augmented_from"),
+                augmenter_id=current_row.get("augmenter_id"),
+                augmenter_config_hash=current_row.get("augmenter_config_hash"),
+            )
+        )
+
+        # Root check FIRST (before depth cap).
+        # A legitimate chain whose root is at exactly depth 32 (i.e. the 32nd
+        # entry has augmented_from=None) must succeed with HTTP 200.
+        parent_id: str | None = current_row.get("augmented_from")
+        if parent_id is None:
+            break  # root reached — always succeeds even at _depth == _MAX_LINEAGE_DEPTH - 1
+
+        # Depth cap: only fires when root has NOT yet been reached.
+        # The for-loop exhausts here only if we have appended _MAX_LINEAGE_DEPTH
+        # entries and still have a non-null augmented_from. The `else` clause
+        # below handles that case.
+
+        # Fetch parent row.
+        try:
+            parent_row = await asyncio.to_thread(_fetch_chunk, parent_id)
+        except LanceQueryError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Lance query error: {exc}",
+            ) from exc
+
+        if parent_row is None:
+            # Parent referenced by augmented_from doesn't exist in Lance —
+            # data integrity violation (augmentation pipeline should never write
+            # a child without the parent being present).
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    f"Broken augmented_from chain: chunk {cid!r} references "
+                    f"parent {parent_id!r} which does not exist in Lance."
+                ),
+            )
+
+        current_row = parent_row
+    else:
+        # for-loop exhausted _MAX_LINEAGE_DEPTH iterations without a break —
+        # root was not reached; the chain is too deep (or non-terminating).
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"Lineage chain depth cap ({_MAX_LINEAGE_DEPTH}) exceeded "
+                f"starting from chunk_id={chunk_id!r}; possible runaway "
+                f"augmentation chain."
+            ),
+        )
+
+    # ── Step 3: Fetch source from Postgres ────────────────────────────────────
+    root_source_id: int | None = lineage_chain[-1].source_id
+
+    if root_source_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"Root chunk {lineage_chain[-1].chunk_id!r} has null source_id; "
+                f"cannot resolve source record."
+            ),
+        )
+
+    source_result = await session.execute(
+        select(Source).where(Source.id == root_source_id)
+    )
+    source_orm = source_result.scalar_one_or_none()
+
+    if source_orm is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Source {root_source_id!r} not found in Postgres.",
+        )
+
+    source_read = SourceRead.model_validate(source_orm)
+
+    # ── Step 4: Fetch canonical document_variant from Postgres ────────────────
+    dv_result = await session.execute(
+        select(DocumentVariant)
+        .where(DocumentVariant.source_id == root_source_id)
+        .where(DocumentVariant.is_canonical.is_(True))
+        .limit(1)
+    )
+    dv_orm = dv_result.scalar_one_or_none()
+    dv_read = DocumentVariantRead.model_validate(dv_orm) if dv_orm is not None else None
+
+    # ── Step 5: Compose and return ────────────────────────────────────────────
+    return ChunkLineageResponse(
+        chunk=chunk_read,
+        source=source_read,
+        document_variant=dv_read,
+        lineage_chain=lineage_chain,
     )
 
 

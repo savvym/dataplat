@@ -891,6 +891,55 @@
         ]
       }
     },
+    "/api/chunks/{chunk_id}/lineage": {
+      "get": {
+        "tags": [
+          "chunks"
+        ],
+        "summary": "Get Chunk Lineage",
+        "description": "Walk the augmented_from chain for a chunk and return source + canonical document_variant.\n\nAuth required (F-008).  No per-user row scoping (\u00a711.6 deferred).\n\nSteps:\n  1. Fetch the requested chunk from Lance (asyncio.to_thread).\n  2. Walk the augmented_from chain iteratively (tip \u2192 root):\n       - Depth cap: _MAX_LINEAGE_DEPTH (32) via for/else.\n       - Cycle guard: seen_ids set detects re-entry before HTTP 500.\n       - Root check (augmented_from is None) fires BEFORE the depth cap\n         so a chain of exactly 32 valid entries still returns HTTP 200.\n  3. Fetch the source record from Postgres (async SQLAlchemy select).\n  4. Fetch the canonical document_variant for that source (async, nullable).\n  5. Return ChunkLineageResponse.\n\nError responses:\n  404 \u2014 chunk_id not found in Lance, or source_id not in Postgres.\n  400 \u2014 Lance/DataFusion query error.\n  500 \u2014 cycle detected, depth cap exceeded, broken augmented_from reference,\n         or null source_id on root chunk (data integrity violations).",
+        "operationId": "get_chunk_lineage_api_chunks__chunk_id__lineage_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "chunk_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 256,
+              "title": "Chunk Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChunkLineageResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/chunks/{chunk_id}": {
       "get": {
         "tags": [
@@ -1147,6 +1196,128 @@
         ],
         "title": "ChunkDistributionResponse",
         "description": "Response for POST /api/chunks/distribution.\n\ncolumn  \u2014 Echo of the requested column name.\ntype    \u2014 \"numeric\" or \"categorical\", auto-detected from the PyArrow schema.\nbuckets \u2014 List of bucket dicts; shape depends on type:\n            Numeric:     {\"range\": [lower: float, upper: float], \"count\": int}\n            Categorical: {\"value\": str | None, \"count\": int}\n          Empty list when no non-null values exist (numeric) or 0 rows match\n          the filter (both types)."
+      },
+      "ChunkLineageEntry": {
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "producer_asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Producer Asset"
+          },
+          "producer_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Producer Version"
+          },
+          "augmented_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Augmented From"
+          },
+          "augmenter_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Augmenter Id"
+          },
+          "augmenter_config_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Augmenter Config Hash"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_id",
+          "source_id",
+          "producer_asset",
+          "producer_version",
+          "augmented_from",
+          "augmenter_id",
+          "augmenter_config_hash"
+        ],
+        "title": "ChunkLineageEntry",
+        "description": "One entry in the augmented_from chain, tip-to-root order.\n\nFields are the identity + provenance columns from CHUNKS_SCHEMA that\ndescribe *how* this chunk was produced and who its parent is.\nsource_id is included so callers can detect if multiple entries share\na source (all should, unless data is corrupt).\n\naugmented_from is null on the root (original) entry \u2014 callers can\nidentify the root as lineage_chain[-1] (where augmented_from is None).\n\nOQ-2 (deferred): _fetch_chunk currently fetches all 24 columns for every\nchain step so a single helper serves both ChunkRead and ChunkLineageEntry\nconstruction. A 7-column projection for chain steps becomes worth it when\nchains routinely reach double-digit depth (post-MVP optimisation)."
+      },
+      "ChunkLineageResponse": {
+        "properties": {
+          "chunk": {
+            "$ref": "#/components/schemas/ChunkRead"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceRead"
+          },
+          "document_variant": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentVariantRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lineage_chain": {
+            "items": {
+              "$ref": "#/components/schemas/ChunkLineageEntry"
+            },
+            "type": "array",
+            "title": "Lineage Chain"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk",
+          "source",
+          "document_variant",
+          "lineage_chain"
+        ],
+        "title": "ChunkLineageResponse",
+        "description": "Response for GET /api/chunks/{chunk_id}/lineage (F-036).\n\nchunk            \u2014 Full ChunkRead for the requested chunk_id.\nsource           \u2014 Source record from Postgres for the root chunk's source_id.\ndocument_variant \u2014 Canonical DocumentVariant for the source, or null if none exists.\nlineage_chain    \u2014 Ordered list of ChunkLineageEntry from the requested chunk\n                   (index 0) down to the root original chunk (last entry).\n                   Length == 1 for non-augmented chunks."
       },
       "ChunkQueryRequest": {
         "properties": {
