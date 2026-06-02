@@ -1,9 +1,10 @@
-"""Recipes router — S037-F-037 + S038-F-038 + S039-F-039.
+"""Recipes router — S037-F-037 + S038-F-038 + S039-F-039 + S040-F-040.
 
 Provides:
   GET  /api/recipes      — paginated list of caller's recipes (F-038).
   POST /api/recipes      — create a recipe row (F-037).
   GET  /api/recipes/{id} — full recipe detail for the authenticated caller (F-039).
+  PUT  /api/recipes/{id} — update recipe definition/description (F-040).
 
 Auth enforcement (Depends(get_current_user)) MUST NOT be removed.
 
@@ -20,15 +21,17 @@ kept consistent with sources.py conventions.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataplat_api.auth.dependencies import get_current_user
-from dataplat_api.db.models import Recipe, User
+from dataplat_api.db.models import Dataset, Recipe, User
 from dataplat_api.db.session import get_session
-from dataplat_api.schemas.recipes import RecipeCreate, RecipeListItem, RecipeListResponse, RecipeOut
+from dataplat_api.schemas.recipes import RecipeCreate, RecipeListItem, RecipeListResponse, RecipeOut, RecipeUpdate
 
 router = APIRouter(prefix="/api/recipes", tags=["recipes"])
 
@@ -135,4 +138,71 @@ async def get_recipe(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Recipe not found",
         )
+    return RecipeOut.model_validate(recipe)
+
+
+@router.put("/{id}", response_model=RecipeOut)
+async def update_recipe(
+    id: int,
+    body: RecipeUpdate,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> RecipeOut:
+    """Update an existing recipe's definition (and optionally description).
+
+    Owner-scoping: combines ``id == ?`` AND ``owner_id == ?`` in one query so
+    that a non-existent id and an id owned by another user both return 404
+    (no-enumeration-leak, mirrors get_recipe).
+
+    Freeze guard (invariant #3): if any dataset has been materialized from
+    this recipe (``dataset.recipe_id == id``), the update is rejected with 409.
+    The ``definition`` is the transformation contract; it must not change after
+    any dataset has been produced from it.
+
+    ``definition`` is always replaced in full (required field).
+    ``description`` is only updated when explicitly present in the request body
+    (uses Pydantic v2 ``model_fields_set`` — absence means "leave unchanged";
+    null means "clear"; string means "update").
+
+    ``updated_at`` is bumped app-side to a concrete UTC datetime (testability
+    preference over ``func.now()`` — see agreed.md §6).
+
+    Auth required (F-008).
+    """
+    # Step 1: Load recipe (owner-scoped) — collapses not-found + wrong-owner.
+    result = await session.execute(
+        select(Recipe)
+        .where(Recipe.id == id)
+        .where(Recipe.owner_id == current_user.id)
+    )
+    recipe = result.scalar_one_or_none()
+    if recipe is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recipe not found",
+        )
+
+    # Step 2: Freeze check — reject if any dataset has been materialized.
+    exists_result = await session.execute(
+        select(exists().where(Dataset.recipe_id == recipe.id))
+    )
+    dataset_exists = exists_result.scalar_one()
+    if dataset_exists:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Recipe is locked: a dataset has been materialized from it",
+        )
+
+    # Step 3: Apply patch.
+    recipe.definition = body.definition
+    if "description" in body.model_fields_set:
+        recipe.description = body.description
+
+    # Step 4: Bump updated_at (app-side UTC — trivially mockable in tests).
+    recipe.updated_at = datetime.now(tz=timezone.utc)  # type: ignore[assignment]
+
+    # Step 5: Commit and refresh.
+    await session.commit()
+    await session.refresh(recipe)
+
     return RecipeOut.model_validate(recipe)

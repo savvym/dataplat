@@ -1,9 +1,10 @@
-"""Recipe schemas — S037-F-037.
+"""Recipe schemas — S037-F-037 + S040-F-040.
 
 Schemas:
   - RecipeName: validated name type (strip whitespace, 1–255 chars).
   - RecipeCreate: request body for POST /api/recipes (F-037).
   - RecipeOut: response for POST /api/recipes (F-037).
+  - RecipeUpdate: request body for PUT /api/recipes/{id} (F-040).
 
 ``definition`` JSONB schema policy:
   Passthrough validation at the API boundary — any JSON object is accepted
@@ -100,3 +101,27 @@ class RecipeListResponse(BaseModel):
 
     items: list[RecipeListItem]
     total: int
+
+
+class RecipeUpdate(BaseModel):
+    """Request body for PUT /api/recipes/{id} (F-040).
+
+    ``definition`` is REQUIRED — the whole definition dict is replaced (not merged).
+    Typed as dict[str, Any] to reject non-object JSON (array, null, bare string) with
+    422 at the Pydantic boundary, matching RecipeCreate semantics.
+
+    ``description`` is OPTIONAL — may be omitted to leave the existing description
+    unchanged, or sent as null/None to clear it, or sent as a string to update it.
+    The handler uses ``body.model_fields_set`` to distinguish "caller omitted the field"
+    (leave existing value) from "caller explicitly sent null or a string" (apply it).
+    This is the canonical Pydantic v2 idiom for partial-update fields — no non-serializable
+    sentinel, no PydanticJsonSchemaWarning, clean ``default: null`` in the OpenAPI schema.
+
+    ``name`` is NOT present — renaming is deferred; MVP locks names after creation.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    definition: dict[str, Any]  # required; full replacement
+    description: str | None = None  # optional; None means "clear it" when present in body;
+    # absence (not in model_fields_set) means "leave unchanged"

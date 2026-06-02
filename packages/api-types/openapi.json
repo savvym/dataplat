@@ -1107,6 +1107,62 @@
             }
           }
         }
+      },
+      "put": {
+        "tags": [
+          "recipes"
+        ],
+        "summary": "Update Recipe",
+        "description": "Update an existing recipe's definition (and optionally description).\n\nOwner-scoping: combines ``id == ?`` AND ``owner_id == ?`` in one query so\nthat a non-existent id and an id owned by another user both return 404\n(no-enumeration-leak, mirrors get_recipe).\n\nFreeze guard (invariant #3): if any dataset has been materialized from\nthis recipe (``dataset.recipe_id == id``), the update is rejected with 409.\nThe ``definition`` is the transformation contract; it must not change after\nany dataset has been produced from it.\n\n``definition`` is always replaced in full (required field).\n``description`` is only updated when explicitly present in the request body\n(uses Pydantic v2 ``model_fields_set`` \u2014 absence means \"leave unchanged\";\nnull means \"clear\"; string means \"update\").\n\n``updated_at`` is bumped app-side to a concrete UTC datetime (testability\npreference over ``func.now()`` \u2014 see agreed.md \u00a76).\n\nAuth required (F-008).",
+        "operationId": "update_recipe_api_recipes__id__put",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecipeUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecipeOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     }
   },
@@ -2405,6 +2461,32 @@
         ],
         "title": "RecipeOut",
         "description": "Response schema for a single recipe row.\n\nUsed by POST /api/recipes (F-037).  Returns the full record (id, name,\ndescription, owner_id, definition, created_at, updated_at) so that the\nclient has all fields in one round trip \u2014 consistent with SourceCollectionOut.\n\n``schema_template_operator_id`` is omitted for MVP; it will be added as an\noptional field in a later sprint when operator-linking semantics are defined."
+      },
+      "RecipeUpdate": {
+        "properties": {
+          "definition": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Definition"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "definition"
+        ],
+        "title": "RecipeUpdate",
+        "description": "Request body for PUT /api/recipes/{id} (F-040).\n\n``definition`` is REQUIRED \u2014 the whole definition dict is replaced (not merged).\nTyped as dict[str, Any] to reject non-object JSON (array, null, bare string) with\n422 at the Pydantic boundary, matching RecipeCreate semantics.\n\n``description`` is OPTIONAL \u2014 may be omitted to leave the existing description\nunchanged, or sent as null/None to clear it, or sent as a string to update it.\nThe handler uses ``body.model_fields_set`` to distinguish \"caller omitted the field\"\n(leave existing value) from \"caller explicitly sent null or a string\" (apply it).\nThis is the canonical Pydantic v2 idiom for partial-update fields \u2014 no non-serializable\nsentinel, no PydanticJsonSchemaWarning, clean ``default: null`` in the OpenAPI schema.\n\n``name`` is NOT present \u2014 renaming is deferred; MVP locks names after creation."
       },
       "RunCreate": {
         "properties": {
