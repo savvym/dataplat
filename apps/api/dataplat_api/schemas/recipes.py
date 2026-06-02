@@ -70,3 +70,33 @@ class RecipeOut(BaseModel):
     definition: dict[str, Any]
     created_at: datetime | None
     updated_at: datetime | None
+
+
+class RecipeListItem(BaseModel):
+    """Slim response schema for a single recipe in a list context.
+
+    Used by GET /api/recipes (F-038).  Omits ``owner_id`` (the endpoint is
+    already owner-scoped, so re-echoing it is redundant) and ``definition``
+    (can be an arbitrarily large JSONB blob; not needed for list/browse use).
+    Full record retrieval belongs on the detail endpoint (future F-039).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    description: str | None
+    created_at: datetime | None
+    updated_at: datetime | None
+
+
+class RecipeListResponse(BaseModel):
+    """Envelope for GET /api/recipes (F-038).
+
+    ``total`` is the count of ALL recipes owned by the caller.  Included for
+    forward-compatibility: a future paginated version can return a subset in
+    ``items`` while keeping ``total`` accurate, without a breaking schema change.
+    """
+
+    items: list[RecipeListItem]
+    total: int

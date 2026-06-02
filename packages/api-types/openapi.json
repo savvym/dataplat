@@ -990,6 +990,31 @@
       }
     },
     "/api/recipes": {
+      "get": {
+        "tags": [
+          "recipes"
+        ],
+        "summary": "List Recipes",
+        "description": "List all recipes owned by the authenticated user.\n\nReturns all recipes in newest-first order (created_at DESC, id DESC).\nNo pagination for MVP \u2014 recipe counts per user are expected to be small.\n``total`` is included in the response envelope for forward-compatibility:\na future paginated version can truncate ``items`` while keeping ``total``\naccurate without a breaking schema change.\n\nAuth required (F-008).",
+        "operationId": "list_recipes_api_recipes_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecipeListResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
+      },
       "post": {
         "tags": [
           "recipes"
@@ -2178,6 +2203,85 @@
         ],
         "title": "RecipeCreate",
         "description": "Request body for POST /api/recipes."
+      },
+      "RecipeListItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "RecipeListItem",
+        "description": "Slim response schema for a single recipe in a list context.\n\nUsed by GET /api/recipes (F-038).  Omits ``owner_id`` (the endpoint is\nalready owner-scoped, so re-echoing it is redundant) and ``definition``\n(can be an arbitrarily large JSONB blob; not needed for list/browse use).\nFull record retrieval belongs on the detail endpoint (future F-039)."
+      },
+      "RecipeListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RecipeListItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "RecipeListResponse",
+        "description": "Envelope for GET /api/recipes (F-038).\n\n``total`` is the count of ALL recipes owned by the caller.  Included for\nforward-compatibility: a future paginated version can return a subset in\n``items`` while keeping ``total`` accurate, without a breaking schema change."
       },
       "RecipeOut": {
         "properties": {
