@@ -1164,6 +1164,64 @@
           }
         }
       }
+    },
+    "/api/recipes/{id}/preview": {
+      "post": {
+        "tags": [
+          "recipes"
+        ],
+        "summary": "Preview Recipe",
+        "description": "Dry-run preview: fetch candidate chunks and synthesise LLM samples.\n\nOwner-scoping: combines ``id == ?`` AND ``owner_id == ?`` in one query so\nthat a non-existent id and an id owned by another user both return 404\n(no-enumeration-leak, mirrors get_recipe / update_recipe).\n\nSteps:\n  1. Load recipe (owner-scoped) \u2014 404 if not found or wrong owner.\n  2. Extract ``schema.template`` from ``recipe.definition``; 400 if absent.\n  3. Pass ``where_clause`` (from ``definition.filter.where``) and ``config``\n     (from ``definition.schema.config``) to ``run_preview``.\n  4. ``run_preview`` fetches up to ``n_samples`` chunks from Lance, calls\n     the LLM gateway once per chunk (``asyncio.gather``), and returns the\n     synthesised samples.\n  5. Errors from Lance (``LanceQueryError``) \u2192 400; errors from the preview\n     logic (``PreviewError``) \u2192 HTTP status code from the exception.\n\nNo writes to MinIO, Parquet, or any Postgres table are performed.\nAll intermediate data (chunks list, LLM responses) lives only in process\nmemory and is discarded after the response (invariant #2).\n\nAuth required (F-008).",
+        "operationId": "preview_recipe_api_recipes__id__preview_post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecipePreviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecipePreviewResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2461,6 +2519,38 @@
         ],
         "title": "RecipeOut",
         "description": "Response schema for a single recipe row.\n\nUsed by POST /api/recipes (F-037).  Returns the full record (id, name,\ndescription, owner_id, definition, created_at, updated_at) so that the\nclient has all fields in one round trip \u2014 consistent with SourceCollectionOut.\n\n``schema_template_operator_id`` is omitted for MVP; it will be added as an\noptional field in a later sprint when operator-linking semantics are defined."
+      },
+      "RecipePreviewRequest": {
+        "properties": {
+          "n_samples": {
+            "type": "integer",
+            "maximum": 5.0,
+            "minimum": 3.0,
+            "title": "N Samples",
+            "default": 3
+          }
+        },
+        "type": "object",
+        "title": "RecipePreviewRequest",
+        "description": "Request body for POST /api/recipes/{id}/preview (F-041).\n\n``n_samples`` controls how many candidate chunks are fetched from Lance and\npassed to the LLM gateway.  Pydantic enforces the [3, 5] range; a value\noutside that range returns 422 automatically (no custom handler needed)."
+      },
+      "RecipePreviewResponse": {
+        "properties": {
+          "samples": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Samples"
+          }
+        },
+        "type": "object",
+        "required": [
+          "samples"
+        ],
+        "title": "RecipePreviewResponse",
+        "description": "Response for POST /api/recipes/{id}/preview (F-041).\n\n``samples`` is a list of template-output dicts.  For ``sft_synthesis_qa``\neach item has at minimum ``\"instruction\"`` (str) and ``\"output\"`` (str).\nThe per-template output shape is intentionally loose (``dict[str, Any]``)\nat the API layer because future templates will emit different shapes; a\ndiscriminated union can be added in a later sprint without breaking this\ncontract.  There is no ``SamplesItem`` wrapper in MVP."
       },
       "RecipeUpdate": {
         "properties": {

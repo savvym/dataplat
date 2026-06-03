@@ -1,10 +1,12 @@
-"""Recipe schemas — S037-F-037 + S040-F-040.
+"""Recipe schemas — S037-F-037 + S040-F-040 + S041-F-041.
 
 Schemas:
   - RecipeName: validated name type (strip whitespace, 1–255 chars).
   - RecipeCreate: request body for POST /api/recipes (F-037).
   - RecipeOut: response for POST /api/recipes (F-037).
   - RecipeUpdate: request body for PUT /api/recipes/{id} (F-040).
+  - RecipePreviewRequest: request body for POST /api/recipes/{id}/preview (F-041).
+  - RecipePreviewResponse: response for POST /api/recipes/{id}/preview (F-041).
 
 ``definition`` JSONB schema policy:
   Passthrough validation at the API boundary — any JSON object is accepted
@@ -27,7 +29,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 # Validated name type: strip whitespace, require 1–255 chars after stripping.
 # Using Annotated + StringConstraints because Field() does not accept
@@ -125,3 +127,30 @@ class RecipeUpdate(BaseModel):
     definition: dict[str, Any]  # required; full replacement
     description: str | None = None  # optional; None means "clear it" when present in body;
     # absence (not in model_fields_set) means "leave unchanged"
+
+
+class RecipePreviewRequest(BaseModel):
+    """Request body for POST /api/recipes/{id}/preview (F-041).
+
+    ``n_samples`` controls how many candidate chunks are fetched from Lance and
+    passed to the LLM gateway.  Pydantic enforces the [3, 5] range; a value
+    outside that range returns 422 automatically (no custom handler needed).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    n_samples: int = Field(default=3, ge=3, le=5)
+
+
+class RecipePreviewResponse(BaseModel):
+    """Response for POST /api/recipes/{id}/preview (F-041).
+
+    ``samples`` is a list of template-output dicts.  For ``sft_synthesis_qa``
+    each item has at minimum ``"instruction"`` (str) and ``"output"`` (str).
+    The per-template output shape is intentionally loose (``dict[str, Any]``)
+    at the API layer because future templates will emit different shapes; a
+    discriminated union can be added in a later sprint without breaking this
+    contract.  There is no ``SamplesItem`` wrapper in MVP.
+    """
+
+    samples: list[dict[str, Any]]

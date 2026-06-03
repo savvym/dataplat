@@ -1,10 +1,11 @@
-"""Recipes router — S037-F-037 + S038-F-038 + S039-F-039 + S040-F-040.
+"""Recipes router — S037-F-037 + S038-F-038 + S039-F-039 + S040-F-040 + S041-F-041.
 
 Provides:
   GET  /api/recipes      — paginated list of caller's recipes (F-038).
   POST /api/recipes      — create a recipe row (F-037).
   GET  /api/recipes/{id} — full recipe detail for the authenticated caller (F-039).
   PUT  /api/recipes/{id} — update recipe definition/description (F-040).
+  POST /api/recipes/{id}/preview — dry-run preview: LLM-synthesised samples (F-041).
 
 Auth enforcement (Depends(get_current_user)) MUST NOT be removed.
 
@@ -31,7 +32,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from dataplat_api.auth.dependencies import get_current_user
 from dataplat_api.db.models import Dataset, Recipe, User
 from dataplat_api.db.session import get_session
-from dataplat_api.schemas.recipes import RecipeCreate, RecipeListItem, RecipeListResponse, RecipeOut, RecipeUpdate
+from dataplat_api.llm.gateway import LLMGateway, get_llm_gateway
+from dataplat_api.recipes.preview import PreviewError, run_preview
+from dataplat_api.routers.chunks import LanceQueryError
+from dataplat_api.schemas.recipes import (
+    RecipeCreate,
+    RecipeListItem,
+    RecipeListResponse,
+    RecipeOut,
+    RecipePreviewRequest,
+    RecipePreviewResponse,
+    RecipeUpdate,
+)
 
 router = APIRouter(prefix="/api/recipes", tags=["recipes"])
 
@@ -206,3 +218,76 @@ async def update_recipe(
     await session.refresh(recipe)
 
     return RecipeOut.model_validate(recipe)
+
+
+@router.post("/{id}/preview", response_model=RecipePreviewResponse)
+async def preview_recipe(
+    id: int,
+    body: RecipePreviewRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+    llm: LLMGateway = Depends(get_llm_gateway),
+) -> RecipePreviewResponse:
+    """Dry-run preview: fetch candidate chunks and synthesise LLM samples.
+
+    Owner-scoping: combines ``id == ?`` AND ``owner_id == ?`` in one query so
+    that a non-existent id and an id owned by another user both return 404
+    (no-enumeration-leak, mirrors get_recipe / update_recipe).
+
+    Steps:
+      1. Load recipe (owner-scoped) — 404 if not found or wrong owner.
+      2. Extract ``schema.template`` from ``recipe.definition``; 400 if absent.
+      3. Pass ``where_clause`` (from ``definition.filter.where``) and ``config``
+         (from ``definition.schema.config``) to ``run_preview``.
+      4. ``run_preview`` fetches up to ``n_samples`` chunks from Lance, calls
+         the LLM gateway once per chunk (``asyncio.gather``), and returns the
+         synthesised samples.
+      5. Errors from Lance (``LanceQueryError``) → 400; errors from the preview
+         logic (``PreviewError``) → HTTP status code from the exception.
+
+    No writes to MinIO, Parquet, or any Postgres table are performed.
+    All intermediate data (chunks list, LLM responses) lives only in process
+    memory and is discarded after the response (invariant #2).
+
+    Auth required (F-008).
+    """
+    # Step 1 — Owner-scoped recipe load (collapses not-found + wrong-owner).
+    result = await session.execute(
+        select(Recipe)
+        .where(Recipe.id == id)
+        .where(Recipe.owner_id == current_user.id)
+    )
+    recipe = result.scalar_one_or_none()
+    if recipe is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recipe not found",
+        )
+
+    # Step 2 — Extract template and config from definition.
+    definition: dict = recipe.definition or {}
+    schema_section: dict = definition.get("schema") or {}
+    template: str | None = schema_section.get("template")
+    if template is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Recipe definition missing required field: schema.template",
+        )
+    config: dict = schema_section.get("config") or {}
+
+    # Step 3 — Extract filter where-clause (may be None — Lance applies no filter).
+    filter_section: dict = definition.get("filter") or {}
+    where_clause: str | None = filter_section.get("where")
+
+    # Steps 4+5 — Run preview; catch both PreviewError and LanceQueryError (N2).
+    try:
+        samples = await run_preview(where_clause, body.n_samples, template, config, llm)
+    except PreviewError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except LanceQueryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Lance query error: {exc}",
+        ) from exc
+
+    return RecipePreviewResponse(samples=samples)
