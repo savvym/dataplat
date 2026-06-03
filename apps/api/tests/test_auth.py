@@ -149,6 +149,7 @@ def _make_session_dependency(user: User | None) -> Any:
 
     Yields an AsyncMock session whose SELECT returns `user` (or None).
     """
+
     async def _override() -> AsyncGenerator[AsyncMock, None]:  # type: ignore[misc]
         session = AsyncMock()
         mock_result = MagicMock()
@@ -164,7 +165,9 @@ def test_token_correct_credentials_returns_200(client: TestClient) -> None:
     from dataplat_api.db.session import get_session
 
     # Build a User with a known bcrypt hash for "testpassword".
-    known_hash = bcrypt.hashpw(b"testpassword", bcrypt.gensalt(rounds=4)).decode("utf-8")
+    known_hash = bcrypt.hashpw(b"testpassword", bcrypt.gensalt(rounds=4)).decode(
+        "utf-8"
+    )
     user = User(id=1, email="admin@example.com", hashed_password=known_hash)
 
     app.dependency_overrides[get_session] = _make_session_dependency(user)
@@ -187,7 +190,9 @@ def test_token_wrong_password_returns_401(client: TestClient) -> None:
     """Correct email but wrong password → 401."""
     from dataplat_api.db.session import get_session
 
-    known_hash = bcrypt.hashpw(b"correctpassword", bcrypt.gensalt(rounds=4)).decode("utf-8")
+    known_hash = bcrypt.hashpw(b"correctpassword", bcrypt.gensalt(rounds=4)).decode(
+        "utf-8"
+    )
     user = User(id=1, email="admin@example.com", hashed_password=known_hash)
 
     app.dependency_overrides[get_session] = _make_session_dependency(user)
@@ -244,6 +249,7 @@ def _make_session_dependency_for_user(user: User | None) -> Any:
     The session's execute() returns a mock result whose scalar_one_or_none()
     returns the given user.
     """
+
     async def _override() -> AsyncGenerator[AsyncMock, None]:  # type: ignore[misc]
         session = AsyncMock()
         mock_result = MagicMock()
@@ -442,7 +448,9 @@ def test_collections_jwt_decode_path(client: TestClient) -> None:
 
     async def _override_session() -> AsyncGenerator[AsyncMock, None]:  # type: ignore[misc]
         session = AsyncMock()
-        session.execute = AsyncMock(side_effect=[auth_result, page_result, count_result])
+        session.execute = AsyncMock(
+            side_effect=[auth_result, page_result, count_result]
+        )
         yield session
 
     app.dependency_overrides[get_session] = _override_session
@@ -480,10 +488,16 @@ def test_seed_admin_creates_one_row() -> None:
 
     result = subprocess.run(
         [
-            "uv", "run", "python", "-m", "dataplat_api.cli",
+            "uv",
+            "run",
+            "python",
+            "-m",
+            "dataplat_api.cli",
             "seed-admin",
-            "--email", "integration-test-seed@example.com",
-            "--password", "integrationtestpassword",
+            "--email",
+            "integration-test-seed@example.com",
+            "--password",
+            "integrationtestpassword",
         ],
         capture_output=True,
         text=True,

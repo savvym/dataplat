@@ -11,6 +11,7 @@ GET  /api/chunks/{chunk_id}/lineage — walk the augmented_from chain for a chun
                                       and return source + canonical document_variant.
 GET  /api/chunks/{chunk_id}         — fetch a single chunk by ID.
 """
+
 from __future__ import annotations  # N2 fix
 
 import asyncio
@@ -395,18 +396,34 @@ async def get_chunk_lineage(
             arrow_tbl = (
                 table.search()
                 .where(f"chunk_id = '{safe_cid}'")
-                .select([
-                    "chunk_id", "source_id", "source_collection_id",
-                    "producer_asset", "producer_version",
-                    "text", "token_count", "docling_refs", "source_refs",
-                    "augmented_from", "augmenter_id", "augmenter_config_hash",
-                    "attr_quality_score", "attr_quality_provider",
-                    "attr_lang_code", "attr_lang_confidence",
-                    "attr_minhash_signature", "attr_minhash_cluster_id",
-                    "attr_minhash_is_head", "attr_pii_has_pii",
-                    "attr_pii_categories", "attr_embed_vector",
-                    "created_at", "updated_at",
-                ])
+                .select(
+                    [
+                        "chunk_id",
+                        "source_id",
+                        "source_collection_id",
+                        "producer_asset",
+                        "producer_version",
+                        "text",
+                        "token_count",
+                        "docling_refs",
+                        "source_refs",
+                        "augmented_from",
+                        "augmenter_id",
+                        "augmenter_config_hash",
+                        "attr_quality_score",
+                        "attr_quality_provider",
+                        "attr_lang_code",
+                        "attr_lang_confidence",
+                        "attr_minhash_signature",
+                        "attr_minhash_cluster_id",
+                        "attr_minhash_is_head",
+                        "attr_pii_has_pii",
+                        "attr_pii_categories",
+                        "attr_embed_vector",
+                        "created_at",
+                        "updated_at",
+                    ]
+                )
                 .limit(1)
                 .to_arrow()
             )
@@ -568,10 +585,7 @@ async def get_chunk_by_id(
             table = get_or_create_chunks_table()
             safe_id = chunk_id.replace("'", "''")
             arrow_tbl = (
-                table.search()
-                .where(f"chunk_id = '{safe_id}'")
-                .limit(1)
-                .to_arrow()
+                table.search().where(f"chunk_id = '{safe_id}'").limit(1).to_arrow()
             )
             rows = arrow_tbl.to_pylist()
             return rows[0] if rows else None

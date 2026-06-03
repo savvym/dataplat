@@ -151,8 +151,16 @@ def test_get_source_returns_200_with_all_fields(client: TestClient) -> None:
     assert response.status_code == 200
     body = response.json()
     required_fields = [
-        "id", "collection_id", "kind", "original_name", "storage_uri",
-        "sha256", "size", "mime_type", "dagster_partition_key", "uploaded_at",
+        "id",
+        "collection_id",
+        "kind",
+        "original_name",
+        "storage_uri",
+        "sha256",
+        "size",
+        "mime_type",
+        "dagster_partition_key",
+        "uploaded_at",
     ]
     for field in required_fields:
         assert field in body, f"missing field '{field}' in response: {body}"
@@ -206,7 +214,9 @@ def test_get_source_mime_type_and_kind(client: TestClient) -> None:
     assert body["kind"] == "file"
 
 
-def test_get_source_collection_id_is_none_when_no_collection(client: TestClient) -> None:
+def test_get_source_collection_id_is_none_when_no_collection(
+    client: TestClient,
+) -> None:
     """Source uploaded without collection_id → collection_id is null in response."""
     stub = _make_source_stub(source_id=3, collection_id=None)
     app.dependency_overrides[get_current_user] = _override_current_user

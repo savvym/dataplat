@@ -140,9 +140,7 @@ async def get_recipe(
     Auth required (F-008).
     """
     result = await session.execute(
-        select(Recipe)
-        .where(Recipe.id == id)
-        .where(Recipe.owner_id == current_user.id)
+        select(Recipe).where(Recipe.id == id).where(Recipe.owner_id == current_user.id)
     )
     recipe = result.scalar_one_or_none()
     if recipe is None:
@@ -183,9 +181,7 @@ async def update_recipe(
     """
     # Step 1: Load recipe (owner-scoped) — collapses not-found + wrong-owner.
     result = await session.execute(
-        select(Recipe)
-        .where(Recipe.id == id)
-        .where(Recipe.owner_id == current_user.id)
+        select(Recipe).where(Recipe.id == id).where(Recipe.owner_id == current_user.id)
     )
     recipe = result.scalar_one_or_none()
     if recipe is None:
@@ -194,9 +190,20 @@ async def update_recipe(
             detail="Recipe not found",
         )
 
-    # Step 2: Freeze check — reject if any dataset has been materialized.
+    # Step 2: Freeze check — reject if any non-failed dataset exists for this recipe.
+    # status='failed' rows represent tombstoned failed attempts — no data was committed
+    # to MinIO so the recipe is NOT frozen by them (H1 fix, S042-F-042 agreed.md §4).
+    # Per-status freeze-guard behavior:
+    #   status='pending'  → recipe is LOCKED (materialization in flight)
+    #   status='running'  → recipe is LOCKED (materialization in flight)
+    #   status='failed'   → recipe is NOT LOCKED (tombstone; user may edit and retry)
+    #   status='done'     → recipe is LOCKED (invariant #3: published)
     exists_result = await session.execute(
-        select(exists().where(Dataset.recipe_id == recipe.id))
+        select(
+            exists()
+            .where(Dataset.recipe_id == recipe.id)
+            .where(Dataset.status != "failed")
+        )
     )
     dataset_exists = exists_result.scalar_one()
     if dataset_exists:
@@ -253,9 +260,7 @@ async def preview_recipe(
     """
     # Step 1 — Owner-scoped recipe load (collapses not-found + wrong-owner).
     result = await session.execute(
-        select(Recipe)
-        .where(Recipe.id == id)
-        .where(Recipe.owner_id == current_user.id)
+        select(Recipe).where(Recipe.id == id).where(Recipe.owner_id == current_user.id)
     )
     recipe = result.scalar_one_or_none()
     if recipe is None:

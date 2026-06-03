@@ -64,9 +64,7 @@ async def login(
     is registered.
     """
     # Look up user by email (username field = email in this system).
-    result = await session.execute(
-        select(User).where(User.email == form_data.username)
-    )
+    result = await session.execute(select(User).where(User.email == form_data.username))
     user: User | None = result.scalars().first()
 
     if user is None:

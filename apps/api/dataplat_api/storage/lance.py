@@ -55,41 +55,42 @@ from dataplat_api.config import settings
 # ---------------------------------------------------------------------------
 # CHUNKS_SCHEMA — design doc §4.2, all 24 fields, exact order.
 # ---------------------------------------------------------------------------
-CHUNKS_SCHEMA: pa.Schema = pa.schema([
-    # === Identifiers ===
-    ("chunk_id",                pa.string()),        # uuid or source+offset derived
-    ("source_id",               pa.int64()),         # denormalized for filter efficiency
-    ("source_collection_id",    pa.int64()),
-    ("producer_asset",          pa.string()),        # "chunks" | "augment_translate_en" etc.
-    ("producer_version",        pa.string()),
-
-    # === Content ===
-    ("text",                    pa.large_string()),  # linearized chunk text
-    ("token_count",             pa.int32()),
-    ("docling_refs",            pa.string()),        # NodeItem path in DoclingDocument
-    ("source_refs",             pa.string()),        # JSON: {page, bbox, char_range}
-
-    # === Provenance ===
-    ("augmented_from",          pa.string()),        # parent chunk_id (NULL = original)
-    ("augmenter_id",            pa.string()),        # augmenter operator id
-    ("augmenter_config_hash",   pa.string()),
-
-    # === Attribute columns (initial set; new attributes = new columns) ===
-    ("attr_quality_score",      pa.float32()),
-    ("attr_quality_provider",   pa.string()),        # 'gpt-4o-mini' | 'qwen-judge' etc.
-    ("attr_lang_code",          pa.string()),
-    ("attr_lang_confidence",    pa.float32()),
-    ("attr_minhash_signature",  pa.list_(pa.uint64())),
-    ("attr_minhash_cluster_id", pa.int64()),
-    ("attr_minhash_is_head",    pa.bool_()),
-    ("attr_pii_has_pii",        pa.bool_()),
-    ("attr_pii_categories",     pa.list_(pa.string())),
-    ("attr_embed_vector",       pa.list_(pa.float32(), 1024)),  # Lance native vector index
-
-    # === Timestamps ===
-    ("created_at",              pa.timestamp("ms")),
-    ("updated_at",              pa.timestamp("ms")),
-])
+CHUNKS_SCHEMA: pa.Schema = pa.schema(
+    [
+        # === Identifiers ===
+        ("chunk_id", pa.string()),  # uuid or source+offset derived
+        ("source_id", pa.int64()),  # denormalized for filter efficiency
+        ("source_collection_id", pa.int64()),
+        ("producer_asset", pa.string()),  # "chunks" | "augment_translate_en" etc.
+        ("producer_version", pa.string()),
+        # === Content ===
+        ("text", pa.large_string()),  # linearized chunk text
+        ("token_count", pa.int32()),
+        ("docling_refs", pa.string()),  # NodeItem path in DoclingDocument
+        ("source_refs", pa.string()),  # JSON: {page, bbox, char_range}
+        # === Provenance ===
+        ("augmented_from", pa.string()),  # parent chunk_id (NULL = original)
+        ("augmenter_id", pa.string()),  # augmenter operator id
+        ("augmenter_config_hash", pa.string()),
+        # === Attribute columns (initial set; new attributes = new columns) ===
+        ("attr_quality_score", pa.float32()),
+        ("attr_quality_provider", pa.string()),  # 'gpt-4o-mini' | 'qwen-judge' etc.
+        ("attr_lang_code", pa.string()),
+        ("attr_lang_confidence", pa.float32()),
+        ("attr_minhash_signature", pa.list_(pa.uint64())),
+        ("attr_minhash_cluster_id", pa.int64()),
+        ("attr_minhash_is_head", pa.bool_()),
+        ("attr_pii_has_pii", pa.bool_()),
+        ("attr_pii_categories", pa.list_(pa.string())),
+        (
+            "attr_embed_vector",
+            pa.list_(pa.float32(), 1024),
+        ),  # Lance native vector index
+        # === Timestamps ===
+        ("created_at", pa.timestamp("ms")),
+        ("updated_at", pa.timestamp("ms")),
+    ]
+)
 
 
 def make_lance_storage_options() -> dict[str, str]:
@@ -104,12 +105,12 @@ def make_lance_storage_options() -> dict[str, str]:
     validates its presence).
     """
     return {
-        "aws_access_key_id":     settings.MINIO_ROOT_USER,
+        "aws_access_key_id": settings.MINIO_ROOT_USER,
         "aws_secret_access_key": settings.MINIO_ROOT_PASSWORD,
         # f"http://{settings.MINIO_ENDPOINT}" — same construction as s3.py.
-        "endpoint":              f"http://{settings.MINIO_ENDPOINT}",
-        "aws_region":            "us-east-1",
-        "allow_http":            "true",
+        "endpoint": f"http://{settings.MINIO_ENDPOINT}",
+        "aws_region": "us-east-1",
+        "allow_http": "true",
     }
 
 

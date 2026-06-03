@@ -39,11 +39,11 @@ class Settings(BaseSettings):
     # Added S011-F-011: MinIO / S3 settings for raw source file storage.
     # Soft defaults match docker-compose.dev.yml dev values (agreed.md §3-D2).
     # Raw source files are id-keyed (not CAS) per design doc line 252 / agreed §3-D4.
-    MINIO_ENDPOINT: str = "minio:9000"       # host:port, no scheme
+    MINIO_ENDPOINT: str = "minio:9000"  # host:port, no scheme
     MINIO_ROOT_USER: str = "minioadmin"
     MINIO_ROOT_PASSWORD: str = "devpassword"
-    MINIO_SOURCES_BUCKET: str = "sources"    # bucket created by minio-init
-    
+    MINIO_SOURCES_BUCKET: str = "sources"  # bucket created by minio-init
+
     # Added S022-F-022: documents bucket for extracted DoclingDocument JSON + images.
     # Per design doc §4.3, documents are stored at s3://documents/{source_id}/{extractor}/
     MINIO_DOCUMENTS_BUCKET: str = "documents"

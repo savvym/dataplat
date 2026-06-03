@@ -57,7 +57,9 @@ def client() -> TestClient:
 # ── Lance mock builders ───────────────────────────────────────────────────────
 
 
-def _make_mock_table_with_sequence(rows_sequence: list[list[dict[str, Any]]]) -> MagicMock:
+def _make_mock_table_with_sequence(
+    rows_sequence: list[list[dict[str, Any]]],
+) -> MagicMock:
     """Build a mock Lance table that returns different rows on successive calls.
 
     Each element of rows_sequence is the list of rows returned by one call to
@@ -258,10 +260,18 @@ def test_lineage_200_augmented_chain_length_3(client: TestClient) -> None:
     lineage_chain[-1].augmented_from is null.  Satisfies V2-augmented.
     """
     # C (tip) → B → A (root)
-    row_c = _make_chunk_row("chunk-C", augmented_from="chunk-B",
-                             augmenter_id="aug-v1", augmenter_config_hash="cfghash1")
-    row_b = _make_chunk_row("chunk-B", augmented_from="chunk-A",
-                             augmenter_id="aug-v1", augmenter_config_hash="cfghash0")
+    row_c = _make_chunk_row(
+        "chunk-C",
+        augmented_from="chunk-B",
+        augmenter_id="aug-v1",
+        augmenter_config_hash="cfghash1",
+    )
+    row_b = _make_chunk_row(
+        "chunk-B",
+        augmented_from="chunk-A",
+        augmenter_id="aug-v1",
+        augmenter_config_hash="cfghash0",
+    )
     row_a = _make_chunk_row("chunk-A", augmented_from=None)
 
     mock_table = _make_mock_table_with_sequence([[row_c], [row_b], [row_a]])
@@ -477,7 +487,9 @@ def test_lineage_200_depth_boundary_32_chain_succeeds(client: TestClient) -> Non
         app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_session, None)
 
-    assert resp.status_code == 200, f"Expected 200 for 32-entry chain, got {resp.status_code}: {resp.json()}"
+    assert resp.status_code == 200, (
+        f"Expected 200 for 32-entry chain, got {resp.status_code}: {resp.json()}"
+    )
     body = resp.json()
     chain = body["lineage_chain"]
     assert len(chain) == 32, f"Expected 32-entry chain, got {len(chain)}"
@@ -566,7 +578,9 @@ def test_lineage_404_source_not_found_in_postgres(client: TestClient) -> None:
 # ── Test 11: no canonical document_variant → document_variant is null ─────────
 
 
-def test_lineage_200_null_document_variant_when_no_canonical(client: TestClient) -> None:
+def test_lineage_200_null_document_variant_when_no_canonical(
+    client: TestClient,
+) -> None:
     """Source exists in Postgres but no canonical variant → 200 with
     document_variant: null.  Not an error (§5.7).
     """

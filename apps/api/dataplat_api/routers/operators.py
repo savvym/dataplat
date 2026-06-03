@@ -42,7 +42,10 @@ router = APIRouter(prefix="/api/operators", tags=["operators"])
 
 @router.get("", response_model=list[OperatorRead])
 async def list_operators(
-    category: str | None = Query(default=None, description="Filter by operator category (e.g. 'extractor', 'tagger'). Optional. Unknown categories return an empty array."),
+    category: str | None = Query(
+        default=None,
+        description="Filter by operator category (e.g. 'extractor', 'tagger'). Optional. Unknown categories return an empty array.",
+    ),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[OperatorRead]:
@@ -79,7 +82,9 @@ async def list_operators(
     return [OperatorRead.model_validate(row) for row in rows]
 
 
-@router.get("/{operator_id}", response_model=OperatorDetail, summary="Get Operator Detail")
+@router.get(
+    "/{operator_id}", response_model=OperatorDetail, summary="Get Operator Detail"
+)
 async def get_operator(
     operator_id: int,
     current_user: User = Depends(get_current_user),
@@ -97,9 +102,7 @@ async def get_operator(
 
     Auth required (F-008).
     """
-    result = await session.execute(
-        select(Operator).where(Operator.id == operator_id)
-    )
+    result = await session.execute(select(Operator).where(Operator.id == operator_id))
     operator = result.scalar_one_or_none()
     if operator is None:
         raise HTTPException(

@@ -124,9 +124,11 @@ def client() -> TestClient:
 # A. Gateway unit tests
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _make_mock_response(json_body: dict, status_code: int = 200) -> httpx.Response:
     """Build a fake httpx.Response for DagsterGateway unit tests."""
     import json
+
     return httpx.Response(
         status_code=status_code,
         content=json.dumps(json_body).encode(),
@@ -150,15 +152,17 @@ def _gateway_with_response(json_body: dict, status_code: int = 200) -> DagsterGa
 @pytest.mark.asyncio
 async def test_add_source_partition_success() -> None:
     """AddDynamicPartitionSuccess → returns None without raising."""
-    gw = _gateway_with_response({
-        "data": {
-            "addDynamicPartition": {
-                "__typename": "AddDynamicPartitionSuccess",
-                "partitionKey": "src_1",
-                "partitionsDefName": "sources",
+    gw = _gateway_with_response(
+        {
+            "data": {
+                "addDynamicPartition": {
+                    "__typename": "AddDynamicPartitionSuccess",
+                    "partitionKey": "src_1",
+                    "partitionsDefName": "sources",
+                }
             }
         }
-    })
+    )
     result = await gw.add_source_partition("src_1")
     assert result is None
 
@@ -166,16 +170,18 @@ async def test_add_source_partition_success() -> None:
 @pytest.mark.asyncio
 async def test_add_source_partition_duplicate_is_noop() -> None:
     """DuplicateDynamicPartitionError → returns None (idempotent, no exception)."""
-    gw = _gateway_with_response({
-        "data": {
-            "addDynamicPartition": {
-                "__typename": "DuplicateDynamicPartitionError",
-                "partitionsDefName": "sources",
-                "partitionName": "src_1",
-                "message": "Partition src_1 already exists",
+    gw = _gateway_with_response(
+        {
+            "data": {
+                "addDynamicPartition": {
+                    "__typename": "DuplicateDynamicPartitionError",
+                    "partitionsDefName": "sources",
+                    "partitionName": "src_1",
+                    "message": "Partition src_1 already exists",
+                }
             }
         }
-    })
+    )
     result = await gw.add_source_partition("src_1")
     assert result is None
 
@@ -183,14 +189,16 @@ async def test_add_source_partition_duplicate_is_noop() -> None:
 @pytest.mark.asyncio
 async def test_add_source_partition_unauthorized_raises() -> None:
     """UnauthorizedError → raises DagsterGatewayError (partition def not loaded)."""
-    gw = _gateway_with_response({
-        "data": {
-            "addDynamicPartition": {
-                "__typename": "UnauthorizedError",
-                "message": "The repository does not contain a dynamic partitions definition with the given name.",
+    gw = _gateway_with_response(
+        {
+            "data": {
+                "addDynamicPartition": {
+                    "__typename": "UnauthorizedError",
+                    "message": "The repository does not contain a dynamic partitions definition with the given name.",
+                }
             }
         }
-    })
+    )
     with pytest.raises(DagsterGatewayError, match="UnauthorizedError"):
         await gw.add_source_partition("src_1")
 
@@ -198,14 +206,16 @@ async def test_add_source_partition_unauthorized_raises() -> None:
 @pytest.mark.asyncio
 async def test_add_source_partition_python_error_raises() -> None:
     """PythonError → raises DagsterGatewayError."""
-    gw = _gateway_with_response({
-        "data": {
-            "addDynamicPartition": {
-                "__typename": "PythonError",
-                "message": "Something went wrong in Dagster",
+    gw = _gateway_with_response(
+        {
+            "data": {
+                "addDynamicPartition": {
+                    "__typename": "PythonError",
+                    "message": "Something went wrong in Dagster",
+                }
             }
         }
-    })
+    )
     with pytest.raises(DagsterGatewayError, match="PythonError"):
         await gw.add_source_partition("src_1")
 
@@ -237,9 +247,7 @@ async def test_add_source_partition_http_error_raises() -> None:
     """httpx.HTTPError (other network failure) → raises DagsterGatewayError."""
     gw = DagsterGateway(graphql_url="http://test/graphql")
     gw._client = AsyncMock()
-    gw._client.post = AsyncMock(
-        side_effect=httpx.HTTPError("generic http error")
-    )
+    gw._client.post = AsyncMock(side_effect=httpx.HTTPError("generic http error"))
     with pytest.raises(DagsterGatewayError, match="HTTP error"):
         await gw.add_source_partition("src_1")
 
@@ -270,14 +278,16 @@ async def test_add_source_partition_graphql_errors_raises() -> None:
 @pytest.mark.asyncio
 async def test_report_source_materialization_success() -> None:
     """ReportRunlessAssetEventsSuccess → returns None without raising."""
-    gw = _gateway_with_response({
-        "data": {
-            "reportRunlessAssetEvents": {
-                "__typename": "ReportRunlessAssetEventsSuccess",
-                "assetKey": {"path": ["source"]},
+    gw = _gateway_with_response(
+        {
+            "data": {
+                "reportRunlessAssetEvents": {
+                    "__typename": "ReportRunlessAssetEventsSuccess",
+                    "assetKey": {"path": ["source"]},
+                }
             }
         }
-    })
+    )
     result = await gw.report_source_materialization(
         partition_key="src_7",
         storage_uri="s3://sources/7/original.pdf",
@@ -289,31 +299,39 @@ async def test_report_source_materialization_success() -> None:
 @pytest.mark.asyncio
 async def test_report_source_materialization_unauthorized_raises() -> None:
     """UnauthorizedError → raises DagsterGatewayError."""
-    gw = _gateway_with_response({
-        "data": {
-            "reportRunlessAssetEvents": {
-                "__typename": "UnauthorizedError",
-                "message": "not allowed",
+    gw = _gateway_with_response(
+        {
+            "data": {
+                "reportRunlessAssetEvents": {
+                    "__typename": "UnauthorizedError",
+                    "message": "not allowed",
+                }
             }
         }
-    })
+    )
     with pytest.raises(DagsterGatewayError, match="UnauthorizedError"):
-        await gw.report_source_materialization("src_7", "s3://sources/7/original.pdf", 1234)
+        await gw.report_source_materialization(
+            "src_7", "s3://sources/7/original.pdf", 1234
+        )
 
 
 @pytest.mark.asyncio
 async def test_report_source_materialization_python_error_raises() -> None:
     """PythonError → raises DagsterGatewayError."""
-    gw = _gateway_with_response({
-        "data": {
-            "reportRunlessAssetEvents": {
-                "__typename": "PythonError",
-                "message": "dagster crash",
+    gw = _gateway_with_response(
+        {
+            "data": {
+                "reportRunlessAssetEvents": {
+                    "__typename": "PythonError",
+                    "message": "dagster crash",
+                }
             }
         }
-    })
+    )
     with pytest.raises(DagsterGatewayError, match="PythonError"):
-        await gw.report_source_materialization("src_7", "s3://sources/7/original.pdf", 1234)
+        await gw.report_source_materialization(
+            "src_7", "s3://sources/7/original.pdf", 1234
+        )
 
 
 @pytest.mark.asyncio
@@ -323,7 +341,9 @@ async def test_report_source_materialization_connect_error_raises() -> None:
     gw._client = AsyncMock()
     gw._client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
     with pytest.raises(DagsterGatewayError, match="Cannot connect"):
-        await gw.report_source_materialization("src_7", "s3://sources/7/original.pdf", 1234)
+        await gw.report_source_materialization(
+            "src_7", "s3://sources/7/original.pdf", 1234
+        )
 
 
 @pytest.mark.asyncio
@@ -332,14 +352,16 @@ async def test_report_source_materialization_payload_shape() -> None:
     gw = DagsterGateway(graphql_url="http://test/graphql")
     gw._client = AsyncMock()
     gw._client.post = AsyncMock(
-        return_value=_make_mock_response({
-            "data": {
-                "reportRunlessAssetEvents": {
-                    "__typename": "ReportRunlessAssetEventsSuccess",
-                    "assetKey": {"path": ["source"]},
+        return_value=_make_mock_response(
+            {
+                "data": {
+                    "reportRunlessAssetEvents": {
+                        "__typename": "ReportRunlessAssetEventsSuccess",
+                        "assetKey": {"path": ["source"]},
+                    }
                 }
             }
-        })
+        )
     )
     await gw.report_source_materialization(
         partition_key="src_42",
@@ -476,7 +498,9 @@ def test_upload_returns_201_even_if_report_mat_fails(client: TestClient) -> None
     assert response.status_code == 201
 
 
-def test_upload_calls_report_mat_even_if_add_partition_fails(client: TestClient) -> None:
+def test_upload_calls_report_mat_even_if_add_partition_fails(
+    client: TestClient,
+) -> None:
     """Even when add_source_partition fails, report_source_materialization is still called."""
     gw_mock = MagicMock(spec=DagsterGateway)
     gw_mock.add_source_partition = AsyncMock(

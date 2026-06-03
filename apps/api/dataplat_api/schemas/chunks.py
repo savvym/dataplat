@@ -11,6 +11,7 @@ Schemas:
   - ChunkLineageEntry: one entry in the augmented_from chain (identity fields only).
   - ChunkLineageResponse: response for GET /api/chunks/{id}/lineage.
 """
+
 from __future__ import annotations
 
 from datetime import datetime

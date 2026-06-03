@@ -54,7 +54,9 @@ from dataplat_api.main import app
 
 # ── Shared mock user ──────────────────────────────────────────────────────────
 
-_MOCK_USER = User(id=7, email="recipe-update@example.com", hashed_password="$2b$12$hash")
+_MOCK_USER = User(
+    id=7, email="recipe-update@example.com", hashed_password="$2b$12$hash"
+)
 
 
 async def _override_current_user() -> User:
@@ -573,7 +575,9 @@ def test_update_recipe_owner_id_in_recipe_query(client: TestClient) -> None:
     async def _capturing_session() -> AsyncGenerator[AsyncMock, None]:  # type: ignore[misc]
         session = AsyncMock()
         result1 = MagicMock()
-        result1.scalar_one_or_none.return_value = None  # 404 — we only care about the SQL
+        result1.scalar_one_or_none.return_value = (
+            None  # 404 — we only care about the SQL
+        )
         session.execute = AsyncMock(return_value=result1)
         captured_session.append(session)
         yield session

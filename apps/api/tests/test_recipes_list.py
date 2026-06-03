@@ -319,7 +319,9 @@ def test_list_recipes_empty_returns_empty_list(client: TestClient) -> None:
 def test_list_recipes_definition_not_in_items(client: TestClient) -> None:
     """Schema guard — response items do NOT contain a 'definition' key (slim schema)."""
     rows = [
-        _make_recipe(id=1, name="recipe-with-definition", definition={"steps": ["pack"]}),
+        _make_recipe(
+            id=1, name="recipe-with-definition", definition={"steps": ["pack"]}
+        ),
     ]
     _set_overrides(rows=rows, total=1)
     try:

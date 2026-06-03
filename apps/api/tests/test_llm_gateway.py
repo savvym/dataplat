@@ -63,7 +63,9 @@ def test_real_mode_parses_response(monkeypatch: pytest.MonkeyPatch) -> None:
         mock_cls.return_value = mock_client
 
         gw = LLMGateway()
-        result = asyncio.run(gw.complete([{"role": "user", "content": "Rate: hello world"}]))
+        result = asyncio.run(
+            gw.complete([{"role": "user", "content": "Rate: hello world"}])
+        )
 
     assert result.content == "0.75"
     assert result.model == "claude-3-haiku-20240307"

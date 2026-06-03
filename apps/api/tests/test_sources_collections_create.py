@@ -314,7 +314,11 @@ def test_create_collection_extra_fields_ignored(client: TestClient) -> None:
     try:
         response = client.post(
             "/api/sources/collections",
-            json={"name": "test-extra", "unknown_field": "garbage", "dataset_card_md": None},
+            json={
+                "name": "test-extra",
+                "unknown_field": "garbage",
+                "dataset_card_md": None,
+            },
         )
     finally:
         app.dependency_overrides.pop(get_current_user, None)

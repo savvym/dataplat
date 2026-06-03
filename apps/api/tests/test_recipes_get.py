@@ -147,7 +147,15 @@ def test_get_recipe_200_returns_full_record(client: TestClient) -> None:
     body = response.json()
 
     # All 7 RecipeOut fields must be present.
-    for key in ("id", "name", "description", "owner_id", "definition", "created_at", "updated_at"):
+    for key in (
+        "id",
+        "name",
+        "description",
+        "owner_id",
+        "definition",
+        "created_at",
+        "updated_at",
+    ):
         assert key in body, f"missing key '{key}' in response: {body}"
 
     assert body["id"] == 42

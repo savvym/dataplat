@@ -162,7 +162,7 @@ def _render(
 def test_render_returns_200_with_markdown_content_type(client: TestClient) -> None:
     """GET render happy path → 200 with text/markdown Content-Type (V1)."""
     variant = _make_variant_stub(variant_id=3, source_id=7)
-    
+
     # Minimal valid DoclingDocument JSON
     docling_json = """{
         "name": "source_7",
@@ -195,7 +195,7 @@ def test_render_returns_200_with_markdown_content_type(client: TestClient) -> No
 def test_render_contains_extracted_text(client: TestClient) -> None:
     """GET render response body contains extracted text (V2)."""
     variant = _make_variant_stub(variant_id=3, source_id=7)
-    
+
     docling_json = """{
         "name": "source_7",
         "pages": {

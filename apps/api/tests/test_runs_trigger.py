@@ -138,15 +138,17 @@ def test_trigger_extract_happy_path(client: TestClient) -> None:
         app.dependency_overrides.pop(get_session, None)
         app.dependency_overrides.pop(get_dagster_gateway, None)
 
-    assert response.status_code == 202, f"Expected 202, got {response.status_code}: {response.text}"
+    assert response.status_code == 202, (
+        f"Expected 202, got {response.status_code}: {response.text}"
+    )
     body = response.json()
-    assert body["dagster_run_id"] == _TEST_BACKFILL_ID, f"dagster_run_id mismatch: {body}"
+    assert body["dagster_run_id"] == _TEST_BACKFILL_ID, (
+        f"dagster_run_id mismatch: {body}"
+    )
     assert body["run_id"] == _TEST_RUN_ID, f"run_id mismatch: {body}"
 
     # Assert the gateway method was called with the correct partition key.
-    gw_mock.launch_extract_backfill.assert_called_once_with(
-        [f"src_{_TEST_SOURCE_ID}"]
-    )
+    gw_mock.launch_extract_backfill.assert_called_once_with([f"src_{_TEST_SOURCE_ID}"])
 
 
 def test_trigger_extract_run_row_added(client: TestClient) -> None:
@@ -212,7 +214,9 @@ def test_trigger_extract_dagster_error_returns_503(client: TestClient) -> None:
         app.dependency_overrides.pop(get_session, None)
         app.dependency_overrides.pop(get_dagster_gateway, None)
 
-    assert response.status_code == 503, f"Expected 503, got {response.status_code}: {response.text}"
+    assert response.status_code == 503, (
+        f"Expected 503, got {response.status_code}: {response.text}"
+    )
     assert "detail" in response.json()
 
 
@@ -233,7 +237,9 @@ def test_trigger_extract_wrong_asset_returns_422(client: TestClient) -> None:
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
-    assert response.status_code == 422, f"Expected 422, got {response.status_code}: {response.text}"
+    assert response.status_code == 422, (
+        f"Expected 422, got {response.status_code}: {response.text}"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -253,7 +259,9 @@ def test_trigger_extract_empty_source_ids_returns_422(client: TestClient) -> Non
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
-    assert response.status_code == 422, f"Expected 422, got {response.status_code}: {response.text}"
+    assert response.status_code == 422, (
+        f"Expected 422, got {response.status_code}: {response.text}"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -278,7 +286,9 @@ def test_trigger_extract_missing_source_returns_404(client: TestClient) -> None:
         app.dependency_overrides.pop(get_session, None)
         app.dependency_overrides.pop(get_dagster_gateway, None)
 
-    assert response.status_code == 404, f"Expected 404, got {response.status_code}: {response.text}"
+    assert response.status_code == 404, (
+        f"Expected 404, got {response.status_code}: {response.text}"
+    )
     body = response.json()
     assert "detail" in body
     assert "9999" in str(body["detail"]), f"Missing source id not in detail: {body}"
@@ -315,17 +325,19 @@ def test_trigger_chunks_happy_path_202(client: TestClient) -> None:
         app.dependency_overrides.pop(get_session, None)
         app.dependency_overrides.pop(get_dagster_gateway, None)
 
-    assert response.status_code == 202, f"Expected 202, got {response.status_code}: {response.text}"
+    assert response.status_code == 202, (
+        f"Expected 202, got {response.status_code}: {response.text}"
+    )
     body = response.json()
-    assert body["dagster_run_id"] == _CHUNKS_BACKFILL_ID, f"dagster_run_id mismatch: {body}"
+    assert body["dagster_run_id"] == _CHUNKS_BACKFILL_ID, (
+        f"dagster_run_id mismatch: {body}"
+    )
     assert body["run_id"] == _CHUNKS_RUN_ID, f"run_id mismatch: {body}"
 
     # extract_mineru backfill must NOT have been called.
     gw_mock.launch_extract_backfill.assert_not_called()
     # chunks backfill must have been called with the correct partition key.
-    gw_mock.launch_chunks_backfill.assert_called_once_with(
-        [f"src_{_TEST_SOURCE_ID}"]
-    )
+    gw_mock.launch_chunks_backfill.assert_called_once_with([f"src_{_TEST_SOURCE_ID}"])
 
 
 def test_trigger_chunks_dagster_error_returns_503(client: TestClient) -> None:
@@ -352,7 +364,9 @@ def test_trigger_chunks_dagster_error_returns_503(client: TestClient) -> None:
         app.dependency_overrides.pop(get_session, None)
         app.dependency_overrides.pop(get_dagster_gateway, None)
 
-    assert response.status_code == 503, f"Expected 503, got {response.status_code}: {response.text}"
+    assert response.status_code == 503, (
+        f"Expected 503, got {response.status_code}: {response.text}"
+    )
     assert "detail" in response.json()
 
 
@@ -372,7 +386,9 @@ def test_trigger_chunks_missing_source_returns_404(client: TestClient) -> None:
         app.dependency_overrides.pop(get_session, None)
         app.dependency_overrides.pop(get_dagster_gateway, None)
 
-    assert response.status_code == 404, f"Expected 404, got {response.status_code}: {response.text}"
+    assert response.status_code == 404, (
+        f"Expected 404, got {response.status_code}: {response.text}"
+    )
     body = response.json()
     assert "detail" in body
     assert "8888" in str(body["detail"]), f"Missing source id not in detail: {body}"
@@ -424,11 +440,15 @@ def test_trigger_run_chunks_creates_run_row_kind_chunk(client: TestClient) -> No
         app.dependency_overrides.pop(get_session, None)
         app.dependency_overrides.pop(get_dagster_gateway, None)
 
-    assert response.status_code == 202, f"Expected 202, got {response.status_code}: {response.text}"
+    assert response.status_code == 202, (
+        f"Expected 202, got {response.status_code}: {response.text}"
+    )
     assert len(captured_run) == 1, f"Expected 1 Run added, got {len(captured_run)}"
     run_obj = captured_run[0]
     assert run_obj.kind == "chunk", f"Expected kind='chunk', got kind={run_obj.kind!r}"
-    assert run_obj.asset_keys == ["chunks"], f"Expected asset_keys=['chunks'], got {run_obj.asset_keys!r}"
+    assert run_obj.asset_keys == ["chunks"], (
+        f"Expected asset_keys=['chunks'], got {run_obj.asset_keys!r}"
+    )
     assert run_obj.dagster_run_id == _CHUNKS_BACKFILL_ID
 
 

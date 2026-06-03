@@ -23,6 +23,7 @@ class Base(DeclarativeBase):
 
 # ── 1. users ──────────────────────────────────────────────────────────────────
 
+
 class User(Base):
     __tablename__ = "users"
 
@@ -46,6 +47,7 @@ class User(Base):
 
 # ── 2. source_collection ──────────────────────────────────────────────────────
 
+
 class SourceCollection(Base):
     __tablename__ = "source_collection"
 
@@ -68,6 +70,7 @@ class SourceCollection(Base):
 
 
 # ── 3. source ─────────────────────────────────────────────────────────────────
+
 
 class Source(Base):
     __tablename__ = "source"
@@ -108,12 +111,15 @@ class Source(Base):
 
 # ── 4. document_variant ───────────────────────────────────────────────────────
 
+
 class DocumentVariant(Base):
     __tablename__ = "document_variant"
 
     __table_args__ = (
         sa.UniqueConstraint(
-            "source_id", "extractor_name", "config_hash",
+            "source_id",
+            "extractor_name",
+            "config_hash",
             name="uq_document_variant_source_extractor_config",
         ),
         sa.Index("idx_doc_variant_source", "source_id"),
@@ -153,6 +159,7 @@ class DocumentVariant(Base):
 
 # ── 5. operator ───────────────────────────────────────────────────────────────
 # 19 columns total: id + 18 from §4.1 lines 286-316
+
 
 class Operator(Base):
     __tablename__ = "operator"
@@ -209,6 +216,7 @@ class Operator(Base):
 
 # ── 6. recipe ─────────────────────────────────────────────────────────────────
 
+
 class Recipe(Base):
     __tablename__ = "recipe"
 
@@ -236,6 +244,7 @@ class Recipe(Base):
 
 
 # ── 7. dataset ────────────────────────────────────────────────────────────────
+
 
 class Dataset(Base):
     __tablename__ = "dataset"
@@ -272,6 +281,7 @@ class Dataset(Base):
 
 # ── 8. run ────────────────────────────────────────────────────────────────────
 
+
 class Run(Base):
     __tablename__ = "run"
 
@@ -281,9 +291,7 @@ class Run(Base):
     )
 
     id: Mapped[int] = mapped_column(sa.BigInteger, sa.Identity(), primary_key=True)
-    dagster_run_id: Mapped[str] = mapped_column(
-        sa.Text, nullable=False, unique=True
-    )
+    dagster_run_id: Mapped[str] = mapped_column(sa.Text, nullable=False, unique=True)
     kind: Mapped[str] = mapped_column(sa.Text, nullable=False)
     asset_keys: Mapped[List[str]] = mapped_column(
         postgresql.ARRAY(sa.Text), nullable=False

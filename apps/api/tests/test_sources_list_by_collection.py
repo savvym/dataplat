@@ -155,7 +155,9 @@ def _make_session_dep_happy(
 
     async def _override() -> AsyncGenerator[AsyncMock, None]:  # type: ignore[misc]
         session = AsyncMock()
-        session.execute = AsyncMock(side_effect=[coll_result, page_result, count_result])
+        session.execute = AsyncMock(
+            side_effect=[coll_result, page_result, count_result]
+        )
         yield session
 
     return _override
@@ -229,7 +231,9 @@ def test_list_sources_by_collection_returns_200_with_items(client: TestClient) -
     assert len(body["items"]) == 3
 
 
-def test_list_sources_by_collection_items_have_required_fields(client: TestClient) -> None:
+def test_list_sources_by_collection_items_have_required_fields(
+    client: TestClient,
+) -> None:
     """Each item in response contains the 5 F-014 required fields (V1)."""
     coll = _make_collection_stub(collection_id=10)
     sources = [
@@ -256,7 +260,9 @@ def test_list_sources_by_collection_items_have_required_fields(client: TestClien
     assert item["sha256"] == _MINIMAL_PDF_SHA256
 
 
-def test_list_sources_by_collection_total_is_full_count_not_page(client: TestClient) -> None:
+def test_list_sources_by_collection_total_is_full_count_not_page(
+    client: TestClient,
+) -> None:
     """limit=2 page returns 2 items but total reflects the full collection count (3)."""
     coll = _make_collection_stub(collection_id=10)
     # Mock returns only 2 rows (as if DB applied LIMIT 2), but count=3.
@@ -297,7 +303,9 @@ def test_list_sources_by_collection_offset_works(client: TestClient) -> None:
     assert body["total"] == 3
 
 
-def test_list_sources_by_collection_empty_collection_returns_zero(client: TestClient) -> None:
+def test_list_sources_by_collection_empty_collection_returns_zero(
+    client: TestClient,
+) -> None:
     """Owned collection that has zero sources → 200, items=[], total=0."""
     coll = _make_collection_stub(collection_id=10)
     app.dependency_overrides[get_current_user] = _override_current_user

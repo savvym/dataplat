@@ -53,7 +53,9 @@ _PREVIEW_COLUMNS: list[str] = [
     "attr_lang_code",
 ]
 
-_FALLBACK_INSTRUCTION_MAX_CHARS: int = 200  # truncate chunk text for fallback instruction field
+_FALLBACK_INSTRUCTION_MAX_CHARS: int = (
+    200  # truncate chunk text for fallback instruction field
+)
 
 _DEFAULT_PROMPT_TEMPLATE: str = (
     "Generate an instruction-response pair from the following text.\n"
@@ -159,7 +161,11 @@ async def _generate_sft_qa(
         return _apply_fallback_or_raise()
 
     # Validate dict shape.
-    if not isinstance(parsed, dict) or "instruction" not in parsed or "output" not in parsed:
+    if (
+        not isinstance(parsed, dict)
+        or "instruction" not in parsed
+        or "output" not in parsed
+    ):
         return _apply_fallback_or_raise()
 
     return {"instruction": parsed["instruction"], "output": parsed["output"]}
@@ -188,7 +194,11 @@ async def _generate_samples_sft_synthesis_qa(
     Returns:
         List of sample dicts (same length as ``chunks``).
     """
-    return list(await asyncio.gather(*[_generate_sft_qa(chunk, config, llm) for chunk in chunks]))
+    return list(
+        await asyncio.gather(
+            *[_generate_sft_qa(chunk, config, llm) for chunk in chunks]
+        )
+    )
 
 
 # ---------------------------------------------------------------------------

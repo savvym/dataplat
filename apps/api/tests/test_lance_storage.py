@@ -38,16 +38,16 @@ def test_chunks_schema_has_all_required_fields() -> None:
 def test_chunks_schema_key_field_types() -> None:
     """Spot-check a representative sample of field types against design doc §4.2."""
     expected: dict[str, pa.DataType] = {
-        "chunk_id":             pa.string(),
-        "source_id":            pa.int64(),
-        "text":                 pa.large_string(),
-        "token_count":          pa.int32(),
-        "attr_quality_score":   pa.float32(),
+        "chunk_id": pa.string(),
+        "source_id": pa.int64(),
+        "text": pa.large_string(),
+        "token_count": pa.int32(),
+        "attr_quality_score": pa.float32(),
         "attr_minhash_signature": pa.list_(pa.uint64()),
-        "attr_embed_vector":    pa.list_(pa.float32(), 1024),
-        "attr_pii_has_pii":     pa.bool_(),
-        "created_at":           pa.timestamp("ms"),
-        "updated_at":           pa.timestamp("ms"),
+        "attr_embed_vector": pa.list_(pa.float32(), 1024),
+        "attr_pii_has_pii": pa.bool_(),
+        "created_at": pa.timestamp("ms"),
+        "updated_at": pa.timestamp("ms"),
     }
     for field_name, expected_type in expected.items():
         field = CHUNKS_SCHEMA.field(field_name)

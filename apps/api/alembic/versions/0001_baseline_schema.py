@@ -157,7 +157,9 @@ def upgrade() -> None:
         ),
         sa.Column("dagster_run_id", sa.Text, nullable=True),
         sa.UniqueConstraint(
-            "source_id", "extractor_name", "config_hash",
+            "source_id",
+            "extractor_name",
+            "config_hash",
             name="uq_document_variant_source_extractor_config",
         ),
     )
@@ -308,7 +310,9 @@ def upgrade() -> None:
         sa.Column("materialized_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("dagster_run_id", sa.Text, nullable=True),
         sa.UniqueConstraint(
-            "recipe_id", "version_tag", name="uq_dataset_recipe_version",
+            "recipe_id",
+            "version_tag",
+            name="uq_dataset_recipe_version",
         ),
     )
     op.create_index("idx_dataset_recipe", "dataset", ["recipe_id"])

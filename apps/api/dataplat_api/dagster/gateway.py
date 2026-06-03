@@ -20,6 +20,8 @@ Methods:
     launch_attr_quality_backfill(partition_keys) -> str  # F-027
     launch_attr_lang_backfill(partition_keys) -> str     # F-029
     launch_attr_minhash_backfill(partition_keys) -> str  # F-030
+    add_dataset_partition(partition_key) -> None     # F-042
+    launch_dataset_backfill(partition_keys) -> str   # F-042
     reload_code_location(...) -> None               # future
 """
 
@@ -279,6 +281,49 @@ mutation LaunchAttrMinhashBackfill($backfillParams: LaunchBackfillParams!) {
 }
 """
 
+# F-042: Add a single dynamic partition key to the "dataset_versions" partition def.
+# Structurally identical to _ADD_SOURCE_PARTITION_MUTATION; separated for
+# self-documentation (one constant per asset, per gateway.py convention at
+# lines 97-99, 155-157, 186-188). partitionsDefName is passed as a variable so
+# the mutation text is identical — only the call site sets it to "dataset_versions".
+_ADD_DATASET_PARTITION_MUTATION = """
+mutation AddDatasetPartition(
+  $partitionKey: String!
+  $partitionsDefName: String!
+  $repositorySelector: RepositorySelector!
+) {
+  addDynamicPartition(
+    partitionKey: $partitionKey
+    partitionsDefName: $partitionsDefName
+    repositorySelector: $repositorySelector
+  ) {
+    __typename
+    ... on AddDynamicPartitionSuccess { partitionKey partitionsDefName }
+    ... on DuplicateDynamicPartitionError { partitionsDefName partitionName message }
+    ... on UnauthorizedError { message }
+    ... on PythonError { message }
+  }
+}
+"""
+
+# F-042: Launch an asset backfill for the dataset asset. Structurally identical to
+# _LAUNCH_CHUNKS_BACKFILL_MUTATION; separated for self-documentation per convention.
+# assetSelection path (["dataset"]) is set at the call site.
+_LAUNCH_DATASET_BACKFILL_MUTATION = """
+mutation LaunchDatasetBackfill($backfillParams: LaunchBackfillParams!) {
+  launchPartitionBackfill(backfillParams: $backfillParams) {
+    __typename
+    ... on LaunchBackfillSuccess { backfillId }
+    ... on PartitionSetNotFoundError { message }
+    ... on PartitionKeysNotFoundError { message }
+    ... on PythonError { message }
+    ... on UnauthorizedError { message }
+    ... on InvalidSubsetError { message }
+    ... on RunConflict { message }
+  }
+}
+"""
+
 # Dagster RunStatus → internal 3-value set (per agreed.md §2.2).
 _TERMINAL_SUCCESS = {"SUCCESS"}
 _TERMINAL_FAILURE = {"FAILURE", "CANCELED"}
@@ -369,9 +414,7 @@ class DagsterGateway:
 
         if not response.is_success:
             # HTTP non-2xx → 503 "Dagster unreachable"
-            raise DagsterGatewayError(
-                f"Dagster returned HTTP {response.status_code}"
-            )
+            raise DagsterGatewayError(f"Dagster returned HTTP {response.status_code}")
 
         try:
             body = response.json()
@@ -383,7 +426,11 @@ class DagsterGateway:
         # Standard GraphQL behaviour; must be treated as a gateway failure → 503
         errors = body.get("errors")
         if errors:
-            msg = errors[0].get("message", "unknown GraphQL error") if isinstance(errors, list) else str(errors)
+            msg = (
+                errors[0].get("message", "unknown GraphQL error")
+                if isinstance(errors, list)
+                else str(errors)
+            )
             raise DagsterGatewayError(f"Dagster GraphQL error: {msg}")
 
         try:
@@ -448,9 +495,7 @@ class DagsterGateway:
             raise DagsterGatewayError(f"HTTP error contacting Dagster: {exc}") from exc
 
         if not response.is_success:
-            raise DagsterGatewayError(
-                f"Dagster returned HTTP {response.status_code}"
-            )
+            raise DagsterGatewayError(f"Dagster returned HTTP {response.status_code}")
 
         try:
             body = response.json()
@@ -459,7 +504,11 @@ class DagsterGateway:
 
         errors = body.get("errors")
         if errors:
-            msg = errors[0].get("message", "unknown GraphQL error") if isinstance(errors, list) else str(errors)
+            msg = (
+                errors[0].get("message", "unknown GraphQL error")
+                if isinstance(errors, list)
+                else str(errors)
+            )
             raise DagsterGatewayError(f"Dagster GraphQL error: {msg}")
 
         try:
@@ -535,9 +584,7 @@ class DagsterGateway:
             raise DagsterGatewayError(f"HTTP error contacting Dagster: {exc}") from exc
 
         if not response.is_success:
-            raise DagsterGatewayError(
-                f"Dagster returned HTTP {response.status_code}"
-            )
+            raise DagsterGatewayError(f"Dagster returned HTTP {response.status_code}")
 
         try:
             body = response.json()
@@ -546,7 +593,11 @@ class DagsterGateway:
 
         errors = body.get("errors")
         if errors:
-            msg = errors[0].get("message", "unknown GraphQL error") if isinstance(errors, list) else str(errors)
+            msg = (
+                errors[0].get("message", "unknown GraphQL error")
+                if isinstance(errors, list)
+                else str(errors)
+            )
             raise DagsterGatewayError(f"Dagster GraphQL error: {msg}")
 
         try:
@@ -573,9 +624,7 @@ class DagsterGateway:
         try:
             dagster_status: str = run_result["status"]
         except (KeyError, TypeError) as exc:
-            raise DagsterGatewayError(
-                "Run response missing status field"
-            ) from exc
+            raise DagsterGatewayError("Run response missing status field") from exc
 
         # Map Dagster RunStatus → internal 3-value set (agreed.md §2.2).
         if dagster_status in _TERMINAL_SUCCESS:
@@ -586,7 +635,12 @@ class DagsterGateway:
             # QUEUED, NOT_STARTED, STARTING, STARTED, MANAGED, CANCELING,
             # and any future unknown values → "running"
             if dagster_status not in {
-                "QUEUED", "NOT_STARTED", "STARTING", "STARTED", "MANAGED", "CANCELING"
+                "QUEUED",
+                "NOT_STARTED",
+                "STARTING",
+                "STARTED",
+                "MANAGED",
+                "CANCELING",
             }:
                 logger.warning(
                     "Unknown Dagster RunStatus %r for run %s — treating as 'running'",
@@ -641,9 +695,7 @@ class DagsterGateway:
             raise DagsterGatewayError(f"HTTP error contacting Dagster: {exc}") from exc
 
         if not response.is_success:
-            raise DagsterGatewayError(
-                f"Dagster returned HTTP {response.status_code}"
-            )
+            raise DagsterGatewayError(f"Dagster returned HTTP {response.status_code}")
 
         try:
             body = response.json()
@@ -652,7 +704,11 @@ class DagsterGateway:
 
         errors = body.get("errors")
         if errors:
-            msg = errors[0].get("message", "unknown GraphQL error") if isinstance(errors, list) else str(errors)
+            msg = (
+                errors[0].get("message", "unknown GraphQL error")
+                if isinstance(errors, list)
+                else str(errors)
+            )
             raise DagsterGatewayError(f"Dagster GraphQL error: {msg}")
 
         try:
@@ -733,9 +789,7 @@ class DagsterGateway:
             raise DagsterGatewayError(f"HTTP error contacting Dagster: {exc}") from exc
 
         if not response.is_success:
-            raise DagsterGatewayError(
-                f"Dagster returned HTTP {response.status_code}"
-            )
+            raise DagsterGatewayError(f"Dagster returned HTTP {response.status_code}")
 
         try:
             body = response.json()
@@ -744,7 +798,11 @@ class DagsterGateway:
 
         errors = body.get("errors")
         if errors:
-            msg = errors[0].get("message", "unknown GraphQL error") if isinstance(errors, list) else str(errors)
+            msg = (
+                errors[0].get("message", "unknown GraphQL error")
+                if isinstance(errors, list)
+                else str(errors)
+            )
             raise DagsterGatewayError(f"Dagster GraphQL error: {msg}")
 
         try:
@@ -760,7 +818,9 @@ class DagsterGateway:
             return None
 
         if typename == "UnauthorizedError":
-            msg = result.get("message", "UnauthorizedError from reportRunlessAssetEvents")
+            msg = result.get(
+                "message", "UnauthorizedError from reportRunlessAssetEvents"
+            )
             raise DagsterGatewayError(
                 f"Dagster reportRunlessAssetEvents UnauthorizedError: {msg}"
             )
@@ -817,9 +877,7 @@ class DagsterGateway:
             raise DagsterGatewayError(f"HTTP error contacting Dagster: {exc}") from exc
 
         if not response.is_success:
-            raise DagsterGatewayError(
-                f"Dagster returned HTTP {response.status_code}"
-            )
+            raise DagsterGatewayError(f"Dagster returned HTTP {response.status_code}")
 
         try:
             body = response.json()
@@ -828,7 +886,11 @@ class DagsterGateway:
 
         errors = body.get("errors")
         if errors:
-            msg = errors[0].get("message", "unknown GraphQL error") if isinstance(errors, list) else str(errors)
+            msg = (
+                errors[0].get("message", "unknown GraphQL error")
+                if isinstance(errors, list)
+                else str(errors)
+            )
             raise DagsterGatewayError(f"Dagster GraphQL error: {msg}")
 
         try:
@@ -840,7 +902,9 @@ class DagsterGateway:
 
         typename = backfill_result.get("__typename")
         if typename != "LaunchBackfillSuccess":
-            msg = backfill_result.get("message", f"launchPartitionBackfill returned {typename}")
+            msg = backfill_result.get(
+                "message", f"launchPartitionBackfill returned {typename}"
+            )
             raise DagsterGatewayError(f"Dagster launchPartitionBackfill failed: {msg}")
 
         try:
@@ -897,9 +961,7 @@ class DagsterGateway:
             raise DagsterGatewayError(f"HTTP error contacting Dagster: {exc}") from exc
 
         if not response.is_success:
-            raise DagsterGatewayError(
-                f"Dagster returned HTTP {response.status_code}"
-            )
+            raise DagsterGatewayError(f"Dagster returned HTTP {response.status_code}")
 
         try:
             body = response.json()
@@ -908,7 +970,11 @@ class DagsterGateway:
 
         errors = body.get("errors")
         if errors:
-            msg = errors[0].get("message", "unknown GraphQL error") if isinstance(errors, list) else str(errors)
+            msg = (
+                errors[0].get("message", "unknown GraphQL error")
+                if isinstance(errors, list)
+                else str(errors)
+            )
             raise DagsterGatewayError(f"Dagster GraphQL error: {msg}")
 
         try:
@@ -920,7 +986,9 @@ class DagsterGateway:
 
         typename = backfill_result.get("__typename")
         if typename != "LaunchBackfillSuccess":
-            msg = backfill_result.get("message", f"launchPartitionBackfill returned {typename}")
+            msg = backfill_result.get(
+                "message", f"launchPartitionBackfill returned {typename}"
+            )
             raise DagsterGatewayError(f"Dagster launchPartitionBackfill failed: {msg}")
 
         try:
@@ -979,9 +1047,7 @@ class DagsterGateway:
             raise DagsterGatewayError(f"HTTP error contacting Dagster: {exc}") from exc
 
         if not response.is_success:
-            raise DagsterGatewayError(
-                f"Dagster returned HTTP {response.status_code}"
-            )
+            raise DagsterGatewayError(f"Dagster returned HTTP {response.status_code}")
 
         try:
             body = response.json()
@@ -990,7 +1056,11 @@ class DagsterGateway:
 
         errors = body.get("errors")
         if errors:
-            msg = errors[0].get("message", "unknown GraphQL error") if isinstance(errors, list) else str(errors)
+            msg = (
+                errors[0].get("message", "unknown GraphQL error")
+                if isinstance(errors, list)
+                else str(errors)
+            )
             raise DagsterGatewayError(f"Dagster GraphQL error: {msg}")
 
         try:
@@ -1002,7 +1072,9 @@ class DagsterGateway:
 
         typename = backfill_result.get("__typename")
         if typename != "LaunchBackfillSuccess":
-            msg = backfill_result.get("message", f"launchPartitionBackfill returned {typename}")
+            msg = backfill_result.get(
+                "message", f"launchPartitionBackfill returned {typename}"
+            )
             raise DagsterGatewayError(f"Dagster launchPartitionBackfill failed: {msg}")
 
         try:
@@ -1061,9 +1133,7 @@ class DagsterGateway:
             raise DagsterGatewayError(f"HTTP error contacting Dagster: {exc}") from exc
 
         if not response.is_success:
-            raise DagsterGatewayError(
-                f"Dagster returned HTTP {response.status_code}"
-            )
+            raise DagsterGatewayError(f"Dagster returned HTTP {response.status_code}")
 
         try:
             body = response.json()
@@ -1072,7 +1142,11 @@ class DagsterGateway:
 
         errors = body.get("errors")
         if errors:
-            msg = errors[0].get("message", "unknown GraphQL error") if isinstance(errors, list) else str(errors)
+            msg = (
+                errors[0].get("message", "unknown GraphQL error")
+                if isinstance(errors, list)
+                else str(errors)
+            )
             raise DagsterGatewayError(f"Dagster GraphQL error: {msg}")
 
         try:
@@ -1084,7 +1158,9 @@ class DagsterGateway:
 
         typename = backfill_result.get("__typename")
         if typename != "LaunchBackfillSuccess":
-            msg = backfill_result.get("message", f"launchPartitionBackfill returned {typename}")
+            msg = backfill_result.get(
+                "message", f"launchPartitionBackfill returned {typename}"
+            )
             raise DagsterGatewayError(f"Dagster launchPartitionBackfill failed: {msg}")
 
         try:
@@ -1143,9 +1219,7 @@ class DagsterGateway:
             raise DagsterGatewayError(f"HTTP error contacting Dagster: {exc}") from exc
 
         if not response.is_success:
-            raise DagsterGatewayError(
-                f"Dagster returned HTTP {response.status_code}"
-            )
+            raise DagsterGatewayError(f"Dagster returned HTTP {response.status_code}")
 
         try:
             body = response.json()
@@ -1154,7 +1228,11 @@ class DagsterGateway:
 
         errors = body.get("errors")
         if errors:
-            msg = errors[0].get("message", "unknown GraphQL error") if isinstance(errors, list) else str(errors)
+            msg = (
+                errors[0].get("message", "unknown GraphQL error")
+                if isinstance(errors, list)
+                else str(errors)
+            )
             raise DagsterGatewayError(f"Dagster GraphQL error: {msg}")
 
         try:
@@ -1166,7 +1244,190 @@ class DagsterGateway:
 
         typename = backfill_result.get("__typename")
         if typename != "LaunchBackfillSuccess":
-            msg = backfill_result.get("message", f"launchPartitionBackfill returned {typename}")
+            msg = backfill_result.get(
+                "message", f"launchPartitionBackfill returned {typename}"
+            )
+            raise DagsterGatewayError(f"Dagster launchPartitionBackfill failed: {msg}")
+
+        try:
+            backfill_id: str = backfill_result["backfillId"]
+        except (KeyError, TypeError) as exc:
+            raise DagsterGatewayError(
+                "launchPartitionBackfill succeeded but backfillId was absent in response"
+            ) from exc
+
+        if not backfill_id:
+            raise DagsterGatewayError("Dagster returned an empty backfillId")
+
+        return backfill_id
+
+    async def add_dataset_partition(self, partition_key: str) -> None:
+        """Add a dynamic partition key to the "dataset_versions" partition definition.
+
+        Called before launching a Dagster backfill for the dataset asset to register
+        the partition key (format: "ds_{recipe_id}_v{n}") in the "dataset_versions"
+        DynamicPartitionsDefinition so the backfill can target it.
+
+        Idempotent: if the partition already exists, Dagster returns
+        DuplicateDynamicPartitionError — treated as a no-op (logged at DEBUG, not
+        raised), because the partition is already registered.
+
+        Mirrors add_source_partition (F-012); only partitionsDefName differs
+        (passed as "dataset_versions" instead of "sources").
+
+        Raises DagsterGatewayError for all failure cases:
+        - httpx network errors (ConnectError, TimeoutException, HTTPError)
+        - HTTP non-2xx response
+        - Non-JSON response body
+        - Top-level GraphQL "errors" key present
+        - UnauthorizedError typename
+        - PythonError typename
+        - Any unexpected __typename
+        """
+        payload = {
+            "query": _ADD_DATASET_PARTITION_MUTATION,
+            "variables": {
+                "partitionKey": partition_key,
+                "partitionsDefName": "dataset_versions",
+                "repositorySelector": {
+                    "repositoryLocationName": _REPOSITORY_LOCATION_NAME,
+                    "repositoryName": _REPOSITORY_NAME,
+                },
+            },
+        }
+        try:
+            response = await self._client.post(self._url, json=payload)
+        except httpx.TimeoutException as exc:
+            raise DagsterGatewayError("Dagster request timed out") from exc
+        except httpx.ConnectError as exc:
+            raise DagsterGatewayError("Cannot connect to Dagster") from exc
+        except httpx.HTTPError as exc:
+            raise DagsterGatewayError(f"HTTP error contacting Dagster: {exc}") from exc
+
+        if not response.is_success:
+            raise DagsterGatewayError(f"Dagster returned HTTP {response.status_code}")
+
+        try:
+            body = response.json()
+        except Exception as exc:
+            raise DagsterGatewayError("Dagster response is not valid JSON") from exc
+
+        errors = body.get("errors")
+        if errors:
+            msg = (
+                errors[0].get("message", "unknown GraphQL error")
+                if isinstance(errors, list)
+                else str(errors)
+            )
+            raise DagsterGatewayError(f"Dagster GraphQL error: {msg}")
+
+        try:
+            result = body["data"]["addDynamicPartition"]
+        except (KeyError, TypeError) as exc:
+            raise DagsterGatewayError(
+                "Unexpected Dagster addDynamicPartition response shape"
+            ) from exc
+
+        typename = result.get("__typename")
+
+        if typename == "AddDynamicPartitionSuccess":
+            return None
+
+        if typename == "DuplicateDynamicPartitionError":
+            # Partition already exists — idempotent no-op.
+            logger.debug(
+                "add_dataset_partition: partition %r already exists in 'dataset_versions' — no-op",
+                partition_key,
+            )
+            return None
+
+        if typename == "UnauthorizedError":
+            msg = result.get("message", "UnauthorizedError from addDynamicPartition")
+            raise DagsterGatewayError(
+                f"Dagster addDynamicPartition UnauthorizedError: {msg}"
+            )
+
+        if typename == "PythonError":
+            msg = result.get("message", "unknown PythonError")
+            raise DagsterGatewayError(f"Dagster addDynamicPartition PythonError: {msg}")
+
+        raise DagsterGatewayError(
+            f"Unexpected addDynamicPartition typename: {typename}"
+        )
+
+    async def launch_dataset_backfill(self, partition_keys: list[str]) -> str:
+        """Launch an asset backfill for the dataset asset over the given partition keys (F-042).
+
+        Executes the ``launchPartitionBackfill`` GraphQL mutation targeting the
+        ``dataset`` asset with the given partition keys.
+
+        The ``assetSelection`` is ``[{"path": ["dataset"]}]``, matching the asset key
+        of the stub (and later real) ``dataset`` asset registered in definitions.py.
+
+        Args:
+            partition_keys: List of partition keys in "ds_{recipe_id}_v{n}" format.
+
+        Returns:
+            The backfillId (string) from LaunchBackfillSuccess.
+
+        Raises DagsterGatewayError for ALL of the following:
+        - httpx network error (ConnectError, TimeoutException, etc.) → 503 from route
+        - HTTP response status is not 2xx → 503 from route
+        - Response body is not valid JSON → 503 from route
+        - Top-level "errors" key present (GraphQL server-side error) → 503 from route
+        - __typename not "LaunchBackfillSuccess" (e.g. PythonError, UnauthorizedError,
+          PartitionSetNotFoundError, PartitionKeysNotFoundError, InvalidSubsetError,
+          RunConflict) → 503 from route
+        - backfillId absent or empty → 503 from route
+        """
+        payload = {
+            "query": _LAUNCH_DATASET_BACKFILL_MUTATION,
+            "variables": {
+                "backfillParams": {
+                    "assetSelection": [{"path": ["dataset"]}],
+                    "partitionNames": partition_keys,
+                    "title": "F-042 dataset",
+                }
+            },
+        }
+        try:
+            response = await self._client.post(self._url, json=payload)
+        except httpx.TimeoutException as exc:
+            raise DagsterGatewayError("Dagster request timed out") from exc
+        except httpx.ConnectError as exc:
+            raise DagsterGatewayError("Cannot connect to Dagster") from exc
+        except httpx.HTTPError as exc:
+            raise DagsterGatewayError(f"HTTP error contacting Dagster: {exc}") from exc
+
+        if not response.is_success:
+            raise DagsterGatewayError(f"Dagster returned HTTP {response.status_code}")
+
+        try:
+            body = response.json()
+        except Exception as exc:
+            raise DagsterGatewayError("Dagster response is not valid JSON") from exc
+
+        errors = body.get("errors")
+        if errors:
+            msg = (
+                errors[0].get("message", "unknown GraphQL error")
+                if isinstance(errors, list)
+                else str(errors)
+            )
+            raise DagsterGatewayError(f"Dagster GraphQL error: {msg}")
+
+        try:
+            backfill_result = body["data"]["launchPartitionBackfill"]
+        except (KeyError, TypeError) as exc:
+            raise DagsterGatewayError(
+                "Unexpected Dagster launchPartitionBackfill response shape"
+            ) from exc
+
+        typename = backfill_result.get("__typename")
+        if typename != "LaunchBackfillSuccess":
+            msg = backfill_result.get(
+                "message", f"launchPartitionBackfill returned {typename}"
+            )
             raise DagsterGatewayError(f"Dagster launchPartitionBackfill failed: {msg}")
 
         try:

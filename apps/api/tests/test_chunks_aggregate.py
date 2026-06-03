@@ -134,7 +134,9 @@ def test_aggregate_count_consistent_with_direct_count(client: TestClient) -> Non
     lang_codes = ["zh"] * 10 + ["en"] * 20 + ["ja"] * 12
     real_table = pa.table({"attr_lang_code": pa.array(lang_codes, type=pa.string())})
     mock_table = _make_agg_mock_table(real_table)
-    mock_table.count_rows.return_value = 42  # not called by aggregate, but set for clarity
+    mock_table.count_rows.return_value = (
+        42  # not called by aggregate, but set for clarity
+    )
 
     app.dependency_overrides[get_current_user] = _override_current_user
     try:
@@ -188,9 +190,7 @@ def test_aggregate_no_filter(client: TestClient) -> None:
 
 def test_aggregate_empty_result(client: TestClient) -> None:
     """Filter matches zero rows → groups=[]."""
-    real_table = pa.table(
-        {"attr_lang_code": pa.array([], type=pa.string())}
-    )
+    real_table = pa.table({"attr_lang_code": pa.array([], type=pa.string())})
     mock_table = _make_agg_mock_table(real_table)
 
     app.dependency_overrides[get_current_user] = _override_current_user

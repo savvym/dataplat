@@ -61,7 +61,9 @@ from dataplat_api.main import app
 
 # ── Shared mock user ──────────────────────────────────────────────────────────
 
-_MOCK_USER = User(id=7, email="recipe-preview@example.com", hashed_password="$2b$12$hash")
+_MOCK_USER = User(
+    id=7, email="recipe-preview@example.com", hashed_password="$2b$12$hash"
+)
 
 
 async def _override_current_user() -> User:
@@ -170,7 +172,9 @@ def _make_llm_stub(content: str) -> LLMGateway:
     return stub
 
 
-def _make_sft_qa_content(instruction: str = "What is X?", output: str = "X is Y.") -> str:
+def _make_sft_qa_content(
+    instruction: str = "What is X?", output: str = "X is Y."
+) -> str:
     """Return a valid JSON string with instruction + output keys."""
     return json.dumps({"instruction": instruction, "output": output})
 
@@ -207,7 +211,9 @@ def client() -> TestClient:
 # ── V1: 200 with samples ──────────────────────────────────────────────────────
 
 
-def test_preview_200_returns_samples(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_preview_200_returns_samples(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """V1 — Valid sft_synthesis_qa recipe, mocked Lance + gateway → 200, len(samples)==3."""
     n = 3
     chunks = _DEFAULT_CHUNKS[:n]
@@ -237,11 +243,15 @@ def test_preview_200_returns_samples(client: TestClient, monkeypatch: pytest.Mon
 # ── V2: sample shape ──────────────────────────────────────────────────────────
 
 
-def test_preview_sample_shape_sft_qa(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_preview_sample_shape_sft_qa(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """V2 — Each sample in V1 response contains at minimum 'instruction' and 'output' keys."""
     n = 3
     chunks = _DEFAULT_CHUNKS[:n]
-    llm_content = _make_sft_qa_content(instruction="Describe it.", output="It is a thing.")
+    llm_content = _make_sft_qa_content(
+        instruction="Describe it.", output="It is a thing."
+    )
     recipe_row = _make_recipe_detail(id=1, name="sft-qa", definition=_SFT_QA_DEFINITION)
 
     monkeypatch.setattr(
@@ -308,12 +318,16 @@ def test_preview_completes_under_30s(monkeypatch: pytest.MonkeyPatch) -> None:
 # ── A1: n_samples=5 ──────────────────────────────────────────────────────────
 
 
-def test_preview_n_samples_5(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_preview_n_samples_5(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A1 — n_samples=5 returns exactly 5 items."""
     n = 5
     chunks = _DEFAULT_CHUNKS[:n]
     llm_content = _make_sft_qa_content()
-    recipe_row = _make_recipe_detail(id=3, name="five-samples", definition=_SFT_QA_DEFINITION)
+    recipe_row = _make_recipe_detail(
+        id=3, name="five-samples", definition=_SFT_QA_DEFINITION
+    )
 
     monkeypatch.setattr(
         "dataplat_api.recipes.preview.get_or_create_chunks_table",
@@ -416,7 +430,9 @@ def test_preview_nonexistent_recipe_404(client: TestClient) -> None:
 # ── A7: unsupported template → 400 ───────────────────────────────────────────
 
 
-def test_preview_unsupported_template_400(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_preview_unsupported_template_400(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A7 — schema.template == 'cpt_plain' (unsupported) → 400 with exact detail."""
     definition = {"schema": {"template": "cpt_plain", "config": {}}}
     recipe_row = _make_recipe_detail(id=4, name="bad-template", definition=definition)
@@ -467,7 +483,9 @@ def test_preview_missing_schema_template_400(client: TestClient) -> None:
 # ── A9: Lance raises exception → 400 ─────────────────────────────────────────
 
 
-def test_preview_lance_error_400(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_preview_lance_error_400(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A9 — Lance raises an exception (bad filter.where syntax) → 400 'Lance query error: ...'."""
     definition = {
         "schema": {"template": "sft_synthesis_qa", "config": {}},
@@ -499,9 +517,13 @@ def test_preview_lance_error_400(client: TestClient, monkeypatch: pytest.MonkeyP
 # ── A10: zero chunks → 400 ───────────────────────────────────────────────────
 
 
-def test_preview_no_chunks_400(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_preview_no_chunks_400(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A10 — Zero chunks match the filter → 400 with exact detail."""
-    recipe_row = _make_recipe_detail(id=7, name="empty-result", definition=_SFT_QA_DEFINITION)
+    recipe_row = _make_recipe_detail(
+        id=7, name="empty-result", definition=_SFT_QA_DEFINITION
+    )
 
     monkeypatch.setattr(
         "dataplat_api.recipes.preview.get_or_create_chunks_table",
@@ -545,7 +567,9 @@ def test_preview_llm_parse_fail_with_fallback(
     )
     app.dependency_overrides[get_current_user] = _override_current_user
     app.dependency_overrides[get_session] = _make_session_dep_returning(recipe_row)
-    app.dependency_overrides[get_llm_gateway] = lambda: _make_llm_stub("NOT JSON AT ALL")
+    app.dependency_overrides[get_llm_gateway] = lambda: _make_llm_stub(
+        "NOT JSON AT ALL"
+    )
     try:
         response = client.post("/api/recipes/8/preview", json={})
     finally:
@@ -570,7 +594,9 @@ def test_preview_llm_parse_fail_no_fallback_502(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A12 — LLM returns non-JSON, fallback_on_failure=false (or absent) → 502 with exact detail."""
-    recipe_row = _make_recipe_detail(id=9, name="fallback-false", definition=_SFT_QA_DEFINITION)
+    recipe_row = _make_recipe_detail(
+        id=9, name="fallback-false", definition=_SFT_QA_DEFINITION
+    )
     chunks = _DEFAULT_CHUNKS[:3]
 
     monkeypatch.setattr(
@@ -579,7 +605,9 @@ def test_preview_llm_parse_fail_no_fallback_502(
     )
     app.dependency_overrides[get_current_user] = _override_current_user
     app.dependency_overrides[get_session] = _make_session_dep_returning(recipe_row)
-    app.dependency_overrides[get_llm_gateway] = lambda: _make_llm_stub("this is not json")
+    app.dependency_overrides[get_llm_gateway] = lambda: _make_llm_stub(
+        "this is not json"
+    )
     try:
         response = client.post("/api/recipes/9/preview", json={})
     finally:
@@ -649,7 +677,9 @@ def test_preview_owner_scoping_sql(client: TestClient) -> None:
     async def _capturing_session() -> AsyncGenerator[AsyncMock, None]:  # type: ignore[misc]
         session = AsyncMock()
         result_mock = MagicMock()
-        result_mock.scalar_one_or_none.return_value = None  # 404 — we care about the SQL
+        result_mock.scalar_one_or_none.return_value = (
+            None  # 404 — we care about the SQL
+        )
         session.execute = AsyncMock(return_value=result_mock)
         captured_session.append(session)
         yield session

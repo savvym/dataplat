@@ -94,9 +94,7 @@ def test_distribution_numeric_with_filter(client: TestClient) -> None:
 
     random.seed(42)
     scores = [random.uniform(0.0, 1.0) for _ in range(100)]
-    real_table = pa.table(
-        {"attr_quality_score": pa.array(scores, type=pa.float64())}
-    )
+    real_table = pa.table({"attr_quality_score": pa.array(scores, type=pa.float64())})
     mock_table = _make_dist_mock_table(real_table)
     app.dependency_overrides[get_current_user] = _override_current_user
     try:
@@ -139,9 +137,7 @@ def test_distribution_categorical_no_filter(client: TestClient) -> None:
     qb.where.assert_not_called() [N4].
     """
     lang_codes = ["en"] * 150 + ["zh"] * 42 + [None] * 3
-    real_table = pa.table(
-        {"attr_lang_code": pa.array(lang_codes, type=pa.string())}
-    )
+    real_table = pa.table({"attr_lang_code": pa.array(lang_codes, type=pa.string())})
     mock_table = _make_dist_mock_table(real_table)
     qb = mock_table.search.return_value
 
@@ -185,9 +181,7 @@ def test_distribution_categorical_no_filter(client: TestClient) -> None:
 def test_distribution_numeric_default_bins(client: TestClient) -> None:
     """No 'bins' in request → exactly 10 buckets; all bucket counts sum to non-null row count."""
     values = list(range(50))  # 50 distinct integers, all non-null
-    real_table = pa.table(
-        {"token_count": pa.array(values, type=pa.int64())}
-    )
+    real_table = pa.table({"token_count": pa.array(values, type=pa.int64())})
     mock_table = _make_dist_mock_table(real_table)
     app.dependency_overrides[get_current_user] = _override_current_user
     try:
@@ -209,9 +203,7 @@ def test_distribution_numeric_default_bins(client: TestClient) -> None:
 def test_distribution_numeric_custom_bins(client: TestClient) -> None:
     """bins=5 → exactly 5 buckets returned."""
     values = [float(i) for i in range(100)]
-    real_table = pa.table(
-        {"attr_quality_score": pa.array(values, type=pa.float64())}
-    )
+    real_table = pa.table({"attr_quality_score": pa.array(values, type=pa.float64())})
     mock_table = _make_dist_mock_table(real_table)
     app.dependency_overrides[get_current_user] = _override_current_user
     try:
@@ -279,9 +271,7 @@ def test_distribution_numeric_all_same_value(client: TestClient) -> None:
 def test_distribution_categorical_with_null_value(client: TestClient) -> None:
     """String column containing null rows → bucket {"value": null, "count": N} is present."""
     lang_codes = ["en"] * 10 + [None] * 4
-    real_table = pa.table(
-        {"attr_lang_code": pa.array(lang_codes, type=pa.string())}
-    )
+    real_table = pa.table({"attr_lang_code": pa.array(lang_codes, type=pa.string())})
     mock_table = _make_dist_mock_table(real_table)
     app.dependency_overrides[get_current_user] = _override_current_user
     try:
@@ -307,13 +297,9 @@ def test_distribution_empty_table(client: TestClient) -> None:
     one string-typed column) and asserts buckets == [] for both [N3].
     """
     # 0-row table with a float column
-    float_table = pa.table(
-        {"attr_quality_score": pa.array([], type=pa.float64())}
-    )
+    float_table = pa.table({"attr_quality_score": pa.array([], type=pa.float64())})
     # 0-row table with a string column
-    string_table = pa.table(
-        {"attr_lang_code": pa.array([], type=pa.string())}
-    )
+    string_table = pa.table({"attr_lang_code": pa.array([], type=pa.string())})
 
     app.dependency_overrides[get_current_user] = _override_current_user
     try:

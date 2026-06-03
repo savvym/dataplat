@@ -56,20 +56,24 @@ def _gateway_with_response(json_body: dict, status_code: int = 200) -> DagsterGa
 @pytest.mark.asyncio
 async def test_launch_chunks_backfill_success() -> None:
     """LaunchBackfillSuccess → returns the backfillId string."""
-    gw = _gateway_with_response({
-        "data": {
-            "launchPartitionBackfill": {
-                "__typename": "LaunchBackfillSuccess",
-                "backfillId": _TEST_BACKFILL_ID,
+    gw = _gateway_with_response(
+        {
+            "data": {
+                "launchPartitionBackfill": {
+                    "__typename": "LaunchBackfillSuccess",
+                    "backfillId": _TEST_BACKFILL_ID,
+                }
             }
         }
-    })
+    )
     result = await gw.launch_chunks_backfill(_TEST_PARTITION_KEYS)
     assert result == _TEST_BACKFILL_ID
 
     # Verify the mutation payload was sent with the correct assetSelection.
     call_kwargs = gw._client.post.call_args
-    sent_payload = call_kwargs[1]["json"] if "json" in call_kwargs[1] else call_kwargs[0][1]
+    sent_payload = (
+        call_kwargs[1]["json"] if "json" in call_kwargs[1] else call_kwargs[0][1]
+    )
     backfill_params = sent_payload["variables"]["backfillParams"]
     assert backfill_params["assetSelection"] == [{"path": ["chunks"]}]
     assert backfill_params["partitionNames"] == _TEST_PARTITION_KEYS
@@ -84,14 +88,16 @@ async def test_launch_chunks_backfill_success() -> None:
 @pytest.mark.asyncio
 async def test_launch_chunks_backfill_python_error() -> None:
     """PythonError __typename from Dagster → raises DagsterGatewayError."""
-    gw = _gateway_with_response({
-        "data": {
-            "launchPartitionBackfill": {
-                "__typename": "PythonError",
-                "message": "Something went wrong in Dagster",
+    gw = _gateway_with_response(
+        {
+            "data": {
+                "launchPartitionBackfill": {
+                    "__typename": "PythonError",
+                    "message": "Something went wrong in Dagster",
+                }
             }
         }
-    })
+    )
     with pytest.raises(DagsterGatewayError, match="launchPartitionBackfill failed"):
         await gw.launch_chunks_backfill(_TEST_PARTITION_KEYS)
 
@@ -104,14 +110,16 @@ async def test_launch_chunks_backfill_python_error() -> None:
 @pytest.mark.asyncio
 async def test_launch_chunks_backfill_unauthorized() -> None:
     """UnauthorizedError __typename → raises DagsterGatewayError."""
-    gw = _gateway_with_response({
-        "data": {
-            "launchPartitionBackfill": {
-                "__typename": "UnauthorizedError",
-                "message": "Not authorized",
+    gw = _gateway_with_response(
+        {
+            "data": {
+                "launchPartitionBackfill": {
+                    "__typename": "UnauthorizedError",
+                    "message": "Not authorized",
+                }
             }
         }
-    })
+    )
     with pytest.raises(DagsterGatewayError, match="launchPartitionBackfill failed"):
         await gw.launch_chunks_backfill(_TEST_PARTITION_KEYS)
 
@@ -128,9 +136,7 @@ async def test_launch_chunks_backfill_network_error() -> None:
 
     gw = DagsterGateway(graphql_url="http://test/graphql")
     gw._client = AsyncMock()
-    gw._client.post = AsyncMock(
-        side_effect=httpx.ConnectError("connection refused")
-    )
+    gw._client.post = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
     with pytest.raises(DagsterGatewayError, match="Cannot connect to Dagster"):
         await gw.launch_chunks_backfill(_TEST_PARTITION_KEYS)
 
@@ -143,13 +149,15 @@ async def test_launch_chunks_backfill_network_error() -> None:
 @pytest.mark.asyncio
 async def test_launch_chunks_backfill_invalid_subset() -> None:
     """InvalidSubsetError __typename → raises DagsterGatewayError."""
-    gw = _gateway_with_response({
-        "data": {
-            "launchPartitionBackfill": {
-                "__typename": "InvalidSubsetError",
-                "message": "Asset key not in job subset",
+    gw = _gateway_with_response(
+        {
+            "data": {
+                "launchPartitionBackfill": {
+                    "__typename": "InvalidSubsetError",
+                    "message": "Asset key not in job subset",
+                }
             }
         }
-    })
+    )
     with pytest.raises(DagsterGatewayError, match="launchPartitionBackfill failed"):
         await gw.launch_chunks_backfill(_TEST_PARTITION_KEYS)

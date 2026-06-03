@@ -21,6 +21,7 @@ from dataplat_api.routers.health import router as health_router
 from dataplat_api.routers.operators import router as operators_router
 from dataplat_api.routers.runs import admin_runs_router, runs_router
 from dataplat_api.llm.router import router as llm_router
+from dataplat_api.routers.datasets import router as datasets_router
 from dataplat_api.routers.recipes import router as recipes_router
 from dataplat_api.routers.sources import router as sources_router
 
@@ -56,5 +57,6 @@ app.include_router(sources_router)
 app.include_router(operators_router)
 app.include_router(chunks_router)
 app.include_router(recipes_router)
+app.include_router(datasets_router)
 # F-028: Internal LLM gateway — excluded from public OpenAPI spec (include_in_schema=False on router).
 app.include_router(llm_router)

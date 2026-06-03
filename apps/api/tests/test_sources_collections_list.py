@@ -213,7 +213,14 @@ def test_list_collections_items_shape(client: TestClient) -> None:
 
     assert response.status_code == 200
     item = response.json()["items"][0]
-    for key in ("id", "name", "owner_id", "dataset_card_md", "created_at", "updated_at"):
+    for key in (
+        "id",
+        "name",
+        "owner_id",
+        "dataset_card_md",
+        "created_at",
+        "updated_at",
+    ):
         assert key in item, f"missing key '{key}' in item: {item}"
     assert item["id"] == 1
     assert item["name"] == "coll-a"
@@ -288,7 +295,9 @@ def test_list_collections_invalid_limit_zero_returns_422(client: TestClient) -> 
     assert response.status_code == 422
 
 
-def test_list_collections_invalid_limit_negative_returns_422(client: TestClient) -> None:
+def test_list_collections_invalid_limit_negative_returns_422(
+    client: TestClient,
+) -> None:
     """limit=-1 violates ge=1 → 422."""
     app.dependency_overrides[get_current_user] = _override_current_user
     try:
@@ -299,7 +308,9 @@ def test_list_collections_invalid_limit_negative_returns_422(client: TestClient)
     assert response.status_code == 422
 
 
-def test_list_collections_invalid_limit_over_cap_returns_422(client: TestClient) -> None:
+def test_list_collections_invalid_limit_over_cap_returns_422(
+    client: TestClient,
+) -> None:
     """limit=201 violates le=200 → 422."""
     app.dependency_overrides[get_current_user] = _override_current_user
     try:
@@ -310,7 +321,9 @@ def test_list_collections_invalid_limit_over_cap_returns_422(client: TestClient)
     assert response.status_code == 422
 
 
-def test_list_collections_invalid_offset_negative_returns_422(client: TestClient) -> None:
+def test_list_collections_invalid_offset_negative_returns_422(
+    client: TestClient,
+) -> None:
     """offset=-1 violates ge=0 → 422."""
     app.dependency_overrides[get_current_user] = _override_current_user
     try:

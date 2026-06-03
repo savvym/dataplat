@@ -77,6 +77,12 @@ from dagster_platform.minhash_tagger import (
 # Confirmed working in Dagster 1.11.16 (S012-F-012 agreed.md §3-D-asset).
 sources_partitions = DynamicPartitionsDefinition(name="sources")
 
+# F-042: DynamicPartitionsDefinition for dataset versions.
+# Partition key format: "ds_{recipe_id}_v{n}" (design doc §5.3, line 532).
+# F-043 will replace the stub dataset asset body but must NOT change this
+# definition name or the asset key "dataset" — they are frozen per agreed.md §6.
+dataset_versions = DynamicPartitionsDefinition(name="dataset_versions")
+
 # F-012: External asset — Dagster does not materialise it; FastAPI reports
 # materialization events via reportRunlessAssetEvents after each upload.
 # AssetSpec is the correct API in Dagster 1.11.16 (external_asset_from_spec
@@ -374,6 +380,27 @@ def attr_minhash(context: AssetExecutionContext) -> list[dict[str, Any]]:
     return rows
 
 
+# F-042: Dataset materializer stub.
+# Partition key format: "ds_{recipe_id}_v{n}" (design doc §5.3, line 532).
+# F-043 replaces the body and adds io_manager_key="hf_dataset_io" to the decorator
+# and HFDatasetIOManager to Definitions(resources={}). The partitions_def and asset
+# key "dataset" are FROZEN and must not change between sprints.
+@asset(
+    partitions_def=dataset_versions,
+    description=(
+        "Dataset materializer stub (F-042). Partition key: ds_{recipe_id}_v{n}. "
+        "Real body implemented in F-043 (sft_synthesis_qa materializer). "
+        "This stub returns a no-op MaterializeResult so that launchPartitionBackfill "
+        "can resolve the asset without error during F-042 integration testing."
+    ),
+)
+def dataset(context: AssetExecutionContext) -> MaterializeResult:
+    """Stub dataset asset (F-042). Body replaced by F-043."""
+    partition_key = context.partition_key
+    context.log.info("dataset stub: partition_key=%s — no-op (F-042 stub)", partition_key)
+    return MaterializeResult(metadata={})
+
+
 @op
 def hello_op(context) -> None:  # type: ignore[no-untyped-def]
     """Minimal op that logs a greeting. Used by hello_world_job (F-005)."""
@@ -394,6 +421,6 @@ def hello_world_job() -> None:
 
 defs = Definitions(
     jobs=[hello_world_job],
-    assets=[source_asset, extract_mineru, chunks, attr_quality, attr_lang, attr_minhash],
+    assets=[source_asset, extract_mineru, chunks, attr_quality, attr_lang, attr_minhash, dataset],
     resources={"lance_chunks_io": LanceChunksIOManager()},
 )

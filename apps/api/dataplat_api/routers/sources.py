@@ -31,7 +31,16 @@ import logging
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -201,9 +210,7 @@ async def list_sources_by_collection(
 
     # Query 3: total count over ALL sources in this collection (no limit/offset).
     count_result = await session.execute(
-        select(func.count())
-        .select_from(Source)
-        .where(Source.collection_id == id)
+        select(func.count()).select_from(Source).where(Source.collection_id == id)
     )
     total = count_result.scalar_one()
 
@@ -370,7 +377,9 @@ async def list_document_variants(
     # Step 1: source existence and accessibility check.
     result = await session.execute(
         select(Source)
-        .join(SourceCollection, Source.collection_id == SourceCollection.id, isouter=True)
+        .join(
+            SourceCollection, Source.collection_id == SourceCollection.id, isouter=True
+        )
         .where(Source.id == source_id)
         .where(
             or_(
@@ -435,7 +444,9 @@ async def set_canonical_document_variant(
     # Step 1: source existence and accessibility check (same as F-020).
     result = await session.execute(
         select(Source)
-        .join(SourceCollection, Source.collection_id == SourceCollection.id, isouter=True)
+        .join(
+            SourceCollection, Source.collection_id == SourceCollection.id, isouter=True
+        )
         .where(Source.id == source_id)
         .where(
             or_(
@@ -514,7 +525,9 @@ async def get_source(
     """
     result = await session.execute(
         select(Source)
-        .join(SourceCollection, Source.collection_id == SourceCollection.id, isouter=True)
+        .join(
+            SourceCollection, Source.collection_id == SourceCollection.id, isouter=True
+        )
         .where(Source.id == id)
         .where(
             or_(

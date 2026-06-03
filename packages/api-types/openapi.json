@@ -1222,6 +1222,54 @@
           }
         }
       }
+    },
+    "/api/datasets/{recipe_id}/materialize": {
+      "post": {
+        "tags": [
+          "datasets"
+        ],
+        "summary": "Materialize Dataset",
+        "description": "Create a Dataset row and launch a Dagster backfill for the ``dataset`` asset.\n\nOwner-scoping: combines ``id == ?`` AND ``owner_id == ?`` in one query so\nthat a non-existent recipe_id and a recipe owned by another user both return\n404 (no-enumeration-leak, mirrors recipes.py).\n\nVersion tagging: ``COUNT(*)`` over ALL existing Dataset rows for this recipe\n(including status='failed' rows) so that a failed v1 attempt causes the next\nattempt to produce v2, never reusing a version_tag that was already registered\nin Dagster's partition definition.\n\nRollback boundary: the Dataset row is committed before any Dagster calls.\nIf Dagster calls fail, the row is tombstoned (status='failed') \u2014 not deleted.\nA 'failed' row does NOT lock the recipe (see H1 fix in recipes.py).\n\nAuth required (F-008).",
+        "operationId": "materialize_dataset_api_datasets__recipe_id__materialize_post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "recipe_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Recipe Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaterializeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2056,6 +2104,25 @@
         ],
         "title": "LaunchHelloWorldResponse",
         "description": "Response body for POST /api/admin/runs/hello-world (HTTP 201 Created).\n\nFields:\n    dagster_run_id: The Dagster run UUID assigned by the webserver.\n        Matches design doc \u00a74.1 column name `dagster_run_id TEXT UNIQUE NOT NULL`."
+      },
+      "MaterializeResponse": {
+        "properties": {
+          "dataset_id": {
+            "type": "integer",
+            "title": "Dataset Id"
+          },
+          "dagster_run_id": {
+            "type": "string",
+            "title": "Dagster Run Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dataset_id",
+          "dagster_run_id"
+        ],
+        "title": "MaterializeResponse",
+        "description": "Response body for POST /api/datasets/{recipe_id}/materialize (F-042).\n\n``dataset_id`` is the Postgres-assigned integer primary key of the new Dataset row.\n``dagster_run_id`` is the Dagster backfillId returned by launchPartitionBackfill.\nBoth fields are captured as plain Python locals before the Step 6 commit\nand returned without accessing the ORM object post-expiry (M2 pattern, agreed.md \u00a74)."
       },
       "OperatorDetail": {
         "properties": {

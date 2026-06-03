@@ -60,7 +60,9 @@ class RunCreate(BaseModel):
                     min_length=1 enforces non-empty at the schema level → FastAPI 422.
     """
 
-    asset: Literal["extract_mineru", "chunks", "attr_quality", "attr_lang", "attr_minhash"]
+    asset: Literal[
+        "extract_mineru", "chunks", "attr_quality", "attr_lang", "attr_minhash"
+    ]
     source_ids: Annotated[list[int], Field(min_length=1)]
 
     model_config = ConfigDict(extra="ignore")

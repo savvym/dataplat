@@ -125,7 +125,9 @@ class RecipeUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     definition: dict[str, Any]  # required; full replacement
-    description: str | None = None  # optional; None means "clear it" when present in body;
+    description: str | None = (
+        None  # optional; None means "clear it" when present in body;
+    )
     # absence (not in model_fields_set) means "leave unchanged"
 
 

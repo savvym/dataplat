@@ -87,8 +87,12 @@ def _render_docling_to_markdown(doc_dict: dict[str, Any]) -> str:
         # Table
         elif node_type == "table":
             if "data" in node:
-                lines.append("| " + " | ".join(node["data"].get("rows", [[]])[0]) + " |")
-                lines.append("|" + "|".join(["---|"] * len(node["data"].get("rows", [[]])[0])))
+                lines.append(
+                    "| " + " | ".join(node["data"].get("rows", [[]])[0]) + " |"
+                )
+                lines.append(
+                    "|" + "|".join(["---|"] * len(node["data"].get("rows", [[]])[0]))
+                )
                 for row in node["data"].get("rows", [])[1:]:
                     lines.append("| " + " | ".join(row) + " |")
                 lines.append("")
@@ -159,7 +163,9 @@ async def render_document_variant(
     result = await session.execute(
         select(DocumentVariant)
         .join(Source)
-        .join(SourceCollection, Source.collection_id == SourceCollection.id, isouter=True)
+        .join(
+            SourceCollection, Source.collection_id == SourceCollection.id, isouter=True
+        )
         .where(DocumentVariant.id == variant_id)
         .where(
             or_(
@@ -182,7 +188,9 @@ async def render_document_variant(
         s3_path_prefix = variant.storage_prefix[len("s3://documents/") :]
     else:
         # Fallback for unusual prefixes
-        s3_path_prefix = variant.storage_prefix.replace("s3://", "").replace("documents/", "", 1)
+        s3_path_prefix = variant.storage_prefix.replace("s3://", "").replace(
+            "documents/", "", 1
+        )
 
     s3_key = f"documents/{s3_path_prefix}doc.docling.json"
 
