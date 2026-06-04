@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     # no docker-compose.dev.yml change is needed.
     MINIO_LANCE_BUCKET: str = "lance"
 
+    # Added S047-F-047: datasets bucket for Parquet + metadata artifacts written by F-044.
+    # Default "datasets" matches MINIO_DATASETS_BUCKET env default in hf_dataset_io_manager.py.
+    # Deferred from F-043 (contracts/S043-F-043/agreed.md §Out of Scope item 4).
+    MINIO_DATASETS_BUCKET: str = "datasets"
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 

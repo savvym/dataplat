@@ -1298,6 +1298,54 @@
         }
       }
     },
+    "/api/datasets/{id}/download": {
+      "get": {
+        "tags": [
+          "datasets"
+        ],
+        "summary": "Download Dataset",
+        "description": "Return presigned MinIO GET URLs for all five dataset artifacts (F-047).\n\nOwner-scoping: combines ``id == ?`` AND ``materialized_by == ?`` in one\nquery so that a non-existent id and an id owned by another user both\nreturn 404 (no-enumeration-leak, mirrors get_dataset).\n\nThe five objects written by F-044's HFDatasetIOManager are:\n  {prefix}/data/train-00000.parquet\n  {prefix}/data/validation-00000.parquet\n  {prefix}/recipe.json\n  {prefix}/README.md\n  {prefix}/dataset_infos.json\n\nwhere ``prefix = f\"{row.id}_{row.version_tag}\"``.\n\nPresigned URLs use ExpiresIn=_PRESIGN_TTL_SECONDS (3600 s = 1 hour).\nThe TTL is echoed in ``expires_in_seconds`` so clients can cache-invalidate.\n\nAuth required (F-008).  No status gate \u2014 frontend (F-069) gates the\nDownload button; if objects don't exist, MinIO returns 404 on fetch.",
+        "operationId": "download_dataset_api_datasets__id__download_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetDownloadResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/datasets/{recipe_id}/materialize": {
       "post": {
         "tags": [
@@ -2190,6 +2238,52 @@
         ],
         "title": "DatasetDetailResponse",
         "description": "Full dataset record for GET /api/datasets/{id} (F-046).\n\nExposes all 13 ORM-mapped columns of the ``dataset`` table.\n``recipe_snapshot`` is the frozen deep-copy of ``recipe.definition``\ncaptured at materialize time \u2014 always a dict (JSONB NOT NULL).\n``stats`` is nullable JSONB written by the IO manager on status='done'.\n``hf_repo_uri`` is the S3 URI assigned during materialize (never null\nfor any row that survived the insert; set to '__pending__' briefly\nin-transaction then replaced before commit \u2014 so always a non-null str).\n``dataset_card_md`` is nullable text; not populated in MVP.\n``materialized_at`` is None until status='done' (set by F-044 IO manager).\n``dagster_run_id`` is None on status='failed' rows where Step 9 was not reached."
+      },
+      "DatasetDownloadFile": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "presigned_url": {
+            "type": "string",
+            "title": "Presigned Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "presigned_url"
+        ],
+        "title": "DatasetDownloadFile",
+        "description": "Single file entry in a presigned URL download list (F-047).\n\n``name`` is the relative object key within the dataset prefix\n(e.g. ``\"data/train-00000.parquet\"``).\n``presigned_url`` is a time-limited signed GET URL pointing at the MinIO\nobject \u2014 generated with ExpiresIn=_PRESIGN_TTL_SECONDS in the handler."
+      },
+      "DatasetDownloadResponse": {
+        "properties": {
+          "dataset_id": {
+            "type": "integer",
+            "title": "Dataset Id"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/DatasetDownloadFile"
+            },
+            "type": "array",
+            "title": "Files"
+          },
+          "expires_in_seconds": {
+            "type": "integer",
+            "title": "Expires In Seconds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dataset_id",
+          "files",
+          "expires_in_seconds"
+        ],
+        "title": "DatasetDownloadResponse",
+        "description": "Response body for GET /api/datasets/{id}/download (F-047).\n\nReturns presigned GET URLs for all five dataset artifacts written by\nF-044's HFDatasetIOManager.  The client fetches each URL directly from\nMinIO \u2014 the API server is not in the data path.\n\n``dataset_id`` echoes the requested dataset id.\n``files`` lists the five artifact entries in deterministic order.\n``expires_in_seconds`` mirrors the TTL used when generating the URLs\nso clients can implement correct cache-invalidation."
       },
       "DatasetListItem": {
         "properties": {

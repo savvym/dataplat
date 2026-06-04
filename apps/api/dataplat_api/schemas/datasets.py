@@ -1,10 +1,12 @@
-"""Dataset schemas — S042-F-042 + S045-F-045 + S046-F-046.
+"""Dataset schemas — S042-F-042 + S045-F-045 + S046-F-046 + S047-F-047.
 
 Schemas:
   - MaterializeResponse: response body for POST /api/datasets/{recipe_id}/materialize.
   - DatasetListItem: slim response schema for a single dataset in a list context.
   - DatasetListResponse: envelope for GET /api/datasets (F-045).
   - DatasetDetailResponse: full dataset record for GET /api/datasets/{id} (F-046).
+  - DatasetDownloadFile: single file entry with name + presigned_url (F-047).
+  - DatasetDownloadResponse: presigned URL list for GET /api/datasets/{id}/download (F-047).
 """
 
 from __future__ import annotations
@@ -107,3 +109,34 @@ class DatasetDetailResponse(BaseModel):
     materialized_by: int | None  # Dataset.materialized_by BigInteger FK nullable
     materialized_at: datetime | None  # Dataset.materialized_at DateTime nullable
     dagster_run_id: str | None  # Dataset.dagster_run_id  Text nullable
+
+
+class DatasetDownloadFile(BaseModel):
+    """Single file entry in a presigned URL download list (F-047).
+
+    ``name`` is the relative object key within the dataset prefix
+    (e.g. ``"data/train-00000.parquet"``).
+    ``presigned_url`` is a time-limited signed GET URL pointing at the MinIO
+    object — generated with ExpiresIn=_PRESIGN_TTL_SECONDS in the handler.
+    """
+
+    name: str
+    presigned_url: str
+
+
+class DatasetDownloadResponse(BaseModel):
+    """Response body for GET /api/datasets/{id}/download (F-047).
+
+    Returns presigned GET URLs for all five dataset artifacts written by
+    F-044's HFDatasetIOManager.  The client fetches each URL directly from
+    MinIO — the API server is not in the data path.
+
+    ``dataset_id`` echoes the requested dataset id.
+    ``files`` lists the five artifact entries in deterministic order.
+    ``expires_in_seconds`` mirrors the TTL used when generating the URLs
+    so clients can implement correct cache-invalidation.
+    """
+
+    dataset_id: int
+    files: list[DatasetDownloadFile]
+    expires_in_seconds: int

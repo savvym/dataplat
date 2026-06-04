@@ -27,15 +27,12 @@ from dataplat_api.config import settings
 
 
 async def get_s3_client() -> AsyncGenerator[Any, None]:
-    """FastAPI dependency — yields an aioboto3 S3 client for the sources bucket.
+    """FastAPI dependency — yields an aioboto3 S3 client.
 
-    Usage in route handlers:
-        @router.post("/upload")
-        async def upload_source(
-            ...,
-            s3: Any = Depends(get_s3_client),
-        ) -> ...:
-            await s3.put_object(Bucket=settings.MINIO_SOURCES_BUCKET, ...)
+    Used for both the sources bucket (F-011) and the datasets bucket (F-047).
+    The caller selects the bucket by passing the appropriate settings value
+    (settings.MINIO_SOURCES_BUCKET or settings.MINIO_DATASETS_BUCKET) to each
+    put_object / get_object / generate_presigned_url call.
 
     Test override:
         app.dependency_overrides[get_s3_client] = _mock_s3_dep

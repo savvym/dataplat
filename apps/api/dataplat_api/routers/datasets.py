@@ -1,8 +1,9 @@
-"""Datasets router — S042-F-042 + S045-F-045 + S046-F-046.
+"""Datasets router — S042-F-042 + S045-F-045 + S046-F-046 + S047-F-047.
 
 Provides:
   GET  /api/datasets               — list all caller-owned datasets (F-045).
   GET  /api/datasets/{id}          — full dataset record for one dataset (F-046).
+  GET  /api/datasets/{id}/download — presigned URL list for 5 dataset artifacts (F-047).
   POST /api/datasets/{recipe_id}/materialize — create a Dataset row and launch a
       Dagster backfill for the stub ``dataset`` asset (F-042).
 
@@ -30,6 +31,7 @@ IntegrityError on INSERT (uq_dataset_recipe_version race) → 409 Conflict.
 from __future__ import annotations
 
 import copy
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -38,18 +40,26 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataplat_api.auth.dependencies import get_current_user
+from dataplat_api.config import settings
 from dataplat_api.dagster.dependencies import get_dagster_gateway
 from dataplat_api.dagster.gateway import DagsterGateway, DagsterGatewayError
 from dataplat_api.db.models import Dataset, Recipe, User
 from dataplat_api.db.session import get_session
 from dataplat_api.schemas.datasets import (
     DatasetDetailResponse,
+    DatasetDownloadFile,
+    DatasetDownloadResponse,
     DatasetListItem,
     DatasetListResponse,
     MaterializeResponse,
 )
+from dataplat_api.storage.s3 import get_s3_client
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
+
+# Module-level constant (NIT-1 resolution): avoids magic number in 5 call sites.
+# 1 hour TTL; configurable TTL deferred to post-MVP.
+_PRESIGN_TTL_SECONDS: int = 3600
 
 
 @router.get("", response_model=DatasetListResponse)
@@ -122,6 +132,73 @@ async def get_dataset(
             detail="Dataset not found",
         )
     return DatasetDetailResponse.model_validate(row)
+
+
+@router.get("/{id}/download", response_model=DatasetDownloadResponse)
+async def download_dataset(
+    id: int,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+    s3: Any = Depends(get_s3_client),
+) -> DatasetDownloadResponse:
+    """Return presigned MinIO GET URLs for all five dataset artifacts (F-047).
+
+    Owner-scoping: combines ``id == ?`` AND ``materialized_by == ?`` in one
+    query so that a non-existent id and an id owned by another user both
+    return 404 (no-enumeration-leak, mirrors get_dataset).
+
+    The five objects written by F-044's HFDatasetIOManager are:
+      {prefix}/data/train-00000.parquet
+      {prefix}/data/validation-00000.parquet
+      {prefix}/recipe.json
+      {prefix}/README.md
+      {prefix}/dataset_infos.json
+
+    where ``prefix = f"{row.id}_{row.version_tag}"``.
+
+    Presigned URLs use ExpiresIn=_PRESIGN_TTL_SECONDS (3600 s = 1 hour).
+    The TTL is echoed in ``expires_in_seconds`` so clients can cache-invalidate.
+
+    Auth required (F-008).  No status gate — frontend (F-069) gates the
+    Download button; if objects don't exist, MinIO returns 404 on fetch.
+    """
+    result = await session.execute(
+        select(Dataset)
+        .where(Dataset.id == id)
+        .where(Dataset.materialized_by == current_user.id)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dataset not found",
+        )
+
+    prefix = f"{row.id}_{row.version_tag}"
+    object_keys = [
+        f"{prefix}/data/train-00000.parquet",
+        f"{prefix}/data/validation-00000.parquet",
+        f"{prefix}/recipe.json",
+        f"{prefix}/README.md",
+        f"{prefix}/dataset_infos.json",
+    ]
+
+    files: list[DatasetDownloadFile] = []
+    for key in object_keys:
+        url = await s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": settings.MINIO_DATASETS_BUCKET, "Key": key},
+            ExpiresIn=_PRESIGN_TTL_SECONDS,
+        )
+        # Relative name is the part after the prefix + "/"
+        name = key[len(prefix) + 1 :]
+        files.append(DatasetDownloadFile(name=name, presigned_url=url))
+
+    return DatasetDownloadResponse(
+        dataset_id=row.id,
+        files=files,
+        expires_in_seconds=_PRESIGN_TTL_SECONDS,
+    )
 
 
 @router.post(
