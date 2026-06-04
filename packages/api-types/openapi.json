@@ -128,14 +128,14 @@
         ]
       }
     },
-    "/api/runs/{run_id}": {
+    "/api/runs/{id}": {
       "get": {
         "tags": [
           "runs"
         ],
-        "summary": "Get Dagster run status",
-        "description": "Return the current status of a Dagster run. Queries Dagster directly \u2014 the local `run` Postgres table is not used (that requires auth context from F-008/F-018). Status values: 'running', 'success', 'failure'. Requires a valid Bearer JWT (F-008).",
-        "operationId": "get_run_status_api_runs__run_id__get",
+        "summary": "Get run record by Postgres id",
+        "description": "Return the full Postgres run record for the authenticated owner. Owner-scoping: combines ``id == ?`` AND ``triggered_by == ?`` so that a non-existent id and an id owned by another user both return 404. Requires a valid Bearer JWT (F-008).",
+        "operationId": "get_run_detail_api_runs__id__get",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -143,12 +143,60 @@
         ],
         "parameters": [
           {
-            "name": "run_id",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDetailResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/dagster/{dagster_run_id}": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get Dagster run status",
+        "description": "Return the current status of a Dagster run. Queries Dagster directly \u2014 the local `run` Postgres table is not used (that requires auth context from F-008/F-018). Status values: 'running', 'success', 'failure'. Requires a valid Bearer JWT (F-008).",
+        "operationId": "get_run_status_api_runs_dagster__dagster_run_id__get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "dagster_run_id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string",
-              "title": "Run Id"
+              "title": "Dagster Run Id"
             }
           }
         ],
@@ -3091,6 +3139,158 @@
         "title": "RunCreateResponse",
         "description": "Response body for POST /api/runs (F-018, HTTP 202 Accepted).\n\nFields:\n    dagster_run_id: The backfillId from LaunchBackfillSuccess.\n    run_id: The Postgres run.id assigned at insert."
       },
+      "RunDetailResponse": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "dagster_run_id": {
+            "type": "string",
+            "title": "Dagster Run Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "asset_keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Asset Keys"
+          },
+          "partition_keys": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partition Keys"
+          },
+          "source_collection_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Collection Id"
+          },
+          "dataset_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Id"
+          },
+          "recipe_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipe Id"
+          },
+          "config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "triggered_by": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Triggered By"
+          },
+          "trigger_context": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "dagster_run_id",
+          "kind",
+          "asset_keys",
+          "partition_keys",
+          "source_collection_id",
+          "dataset_id",
+          "recipe_id",
+          "config",
+          "status",
+          "started_at",
+          "ended_at",
+          "triggered_by",
+          "trigger_context"
+        ],
+        "title": "RunDetailResponse",
+        "description": "Full run record for GET /api/runs/{id} (F-048).\n\nExposes all 14 ORM-mapped columns of the ``run`` table.\n``dagster_run_id`` is the Dagster backfill UUID (TEXT UNIQUE NOT NULL).\n``kind`` is the run type string set by the trigger handler.\n``config`` is a nullable JSONB dict; currently None for all trigger paths.\n``started_at`` / ``ended_at`` are nullable datetimes (None until state\ntransitions fire in Dagster sensor callbacks, if any).\n``triggered_by`` is the owner FK; doubles as the owner-scope filter.\n``trigger_context`` is nullable JSONB; currently None for all trigger paths.\n``asset_keys`` / ``partition_keys`` are Postgres ARRAY(Text) columns."
+      },
       "RunStatusResponse": {
         "properties": {
           "dagster_run_id": {
@@ -3113,7 +3313,7 @@
           "status"
         ],
         "title": "RunStatusResponse",
-        "description": "Response body for GET /api/runs/{run_id} (HTTP 200 OK).\n\nFields:\n    dagster_run_id: The Dagster run UUID (echoed from the path parameter).\n    status: Three-value internal status derived from Dagster's RunStatus enum.\n        \"running\"  \u2014 run is queued or in progress\n        \"success\"  \u2014 run completed successfully\n        \"failure\"  \u2014 run failed or was canceled"
+        "description": "Response body for GET /api/runs/dagster/{dagster_run_id} (HTTP 200 OK).\n\nFields:\n    dagster_run_id: The Dagster run UUID (echoed from the path parameter).\n    status: Three-value internal status derived from Dagster's RunStatus enum.\n        \"running\"  \u2014 run is queued or in progress\n        \"success\"  \u2014 run completed successfully\n        \"failure\"  \u2014 run failed or was canceled"
       },
       "SourceCollectionCreate": {
         "properties": {

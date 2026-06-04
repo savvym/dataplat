@@ -448,16 +448,16 @@ print(body['dagster_run_id'], end='')
     test -n "$RUN_ID" || { echo "FAIL: no dagster_run_id returned from trigger"; exit 1; }
     echo "  triggered run: $RUN_ID"
 
-    echo "--- runs V1: poll GET /api/runs/{run_id} until success or timeout ---"
+    echo "--- runs V1: poll GET /api/runs/dagster/{dagster_run_id} until success or timeout ---"
     STATUS="unknown"
     STATUS_BODY=$(mktemp)
     for i in $(seq 1 60); do
-      RESP=$(curl -sS "http://localhost:${FASTAPI_HOST_PORT}/api/runs/${RUN_ID}" \
+      RESP=$(curl -sS "http://localhost:${FASTAPI_HOST_PORT}/api/runs/dagster/${RUN_ID}" \
         -H "Authorization: Bearer $RUNS_TOKEN" \
         -w '\n%{http_code}' -o "$STATUS_BODY")
       STATUS_CODE=$(echo "$RESP" | tail -n1)
       BODY=$(cat "$STATUS_BODY")
-      test "$STATUS_CODE" = "200" || { echo "GET /api/runs/$RUN_ID -> $STATUS_CODE: $BODY"; rm -f "$STATUS_BODY"; exit 1; }
+      test "$STATUS_CODE" = "200" || { echo "GET /api/runs/dagster/$RUN_ID -> $STATUS_CODE: $BODY"; rm -f "$STATUS_BODY"; exit 1; }
       STATUS=$(echo "$BODY" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status','unknown'), end='')")
       [ "$STATUS" = "success" ] && break
       [ "$STATUS" = "failure" ] && { echo "FAIL: hello-world run reached failure status: $BODY"; rm -f "$STATUS_BODY"; exit 1; }

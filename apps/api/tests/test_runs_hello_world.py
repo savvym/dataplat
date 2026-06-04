@@ -1,4 +1,4 @@
-"""Tests for POST /api/admin/runs/hello-world and GET /api/runs/{run_id} — S005-F-005,
+"""Tests for POST /api/admin/runs/hello-world and GET /api/runs/dagster/{dagster_run_id} — S005-F-005,
 extended S008-F-008.
 
 Uses FastAPI's TestClient (sync ASGI wrapper) with DagsterGateway methods
@@ -94,7 +94,7 @@ def test_launch_hello_world_503_on_gateway_error(client: TestClient) -> None:
     assert "dagster is down" in body["detail"]
 
 
-# ── GET /api/runs/{run_id} ────────────────────────────────────────────────────
+# ── GET /api/runs/dagster/{dagster_run_id} ────────────────────────────────────
 
 
 def test_get_run_status_200_success(client: TestClient) -> None:
@@ -107,7 +107,7 @@ def test_get_run_status_200_success(client: TestClient) -> None:
             return_value={"dagster_run_id": fake_run_id, "status": "success"}
         ),
     ):
-        response = client.get(f"/api/runs/{fake_run_id}")
+        response = client.get(f"/api/runs/dagster/{fake_run_id}")
 
     assert response.status_code == 200
     body = response.json()
@@ -129,7 +129,7 @@ def test_get_run_status_404_when_not_found(client: TestClient) -> None:
             side_effect=DagsterRunNotFoundError(f"run not found: {fake_run_id}")
         ),
     ):
-        response = client.get(f"/api/runs/{fake_run_id}")
+        response = client.get(f"/api/runs/dagster/{fake_run_id}")
 
     assert response.status_code == 404
     body = response.json()
@@ -145,7 +145,7 @@ def test_get_run_status_503_on_gateway_error(client: TestClient) -> None:
         "get_run_status",
         new=AsyncMock(side_effect=DagsterGatewayError("dagster unreachable")),
     ):
-        response = client.get(f"/api/runs/{fake_run_id}")
+        response = client.get(f"/api/runs/dagster/{fake_run_id}")
 
     assert response.status_code == 503
     body = response.json()

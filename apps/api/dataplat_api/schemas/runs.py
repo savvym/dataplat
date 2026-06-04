@@ -1,9 +1,10 @@
-"""Pydantic response schemas for the runs API surface — S005-F-005, S018-F-018.
+"""Pydantic response schemas for the runs API surface — S005-F-005, S018-F-018, S048-F-048.
 
 These schemas define the JSON shape of responses from:
-  - POST /api/admin/runs/hello-world  → LaunchHelloWorldResponse
-  - GET  /api/runs/{run_id}           → RunStatusResponse
-  - POST /api/runs                    → RunCreate (request), RunCreateResponse (response)
+  - POST /api/admin/runs/hello-world       → LaunchHelloWorldResponse
+  - GET  /api/runs/dagster/{dagster_run_id} → RunStatusResponse
+  - POST /api/runs                         → RunCreate (request), RunCreateResponse (response)
+  - GET  /api/runs/{id}                    → RunDetailResponse
 
 The `status` field in RunStatusResponse uses a three-value Literal that maps
 Dagster's RunStatus enum per the agreed.md §2.2 mapping table:
@@ -14,6 +15,7 @@ Dagster's RunStatus enum per the agreed.md §2.2 mapping table:
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -31,7 +33,7 @@ class LaunchHelloWorldResponse(BaseModel):
 
 
 class RunStatusResponse(BaseModel):
-    """Response body for GET /api/runs/{run_id} (HTTP 200 OK).
+    """Response body for GET /api/runs/dagster/{dagster_run_id} (HTTP 200 OK).
 
     Fields:
         dagster_run_id: The Dagster run UUID (echoed from the path parameter).
@@ -78,3 +80,44 @@ class RunCreateResponse(BaseModel):
 
     dagster_run_id: str
     run_id: int
+
+
+class RunDetailResponse(BaseModel):
+    """Full run record for GET /api/runs/{id} (F-048).
+
+    Exposes all 14 ORM-mapped columns of the ``run`` table.
+    ``dagster_run_id`` is the Dagster backfill UUID (TEXT UNIQUE NOT NULL).
+    ``kind`` is the run type string set by the trigger handler.
+    ``config`` is a nullable JSONB dict; currently None for all trigger paths.
+    ``started_at`` / ``ended_at`` are nullable datetimes (None until state
+    transitions fire in Dagster sensor callbacks, if any).
+    ``triggered_by`` is the owner FK; doubles as the owner-scope filter.
+    ``trigger_context`` is nullable JSONB; currently None for all trigger paths.
+    ``asset_keys`` / ``partition_keys`` are Postgres ARRAY(Text) columns.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    # ── Identity ──────────────────────────────────────────────────────────────
+    id: int  # Run.id              BigInteger PK
+    dagster_run_id: str  # Run.dagster_run_id  Text NOT NULL UNIQUE
+
+    # ── Run classification ────────────────────────────────────────────────────
+    kind: str  # Run.kind            Text NOT NULL
+    asset_keys: list[str]  # Run.asset_keys      ARRAY(Text) NOT NULL
+    partition_keys: list[str] | None  # Run.partition_keys  ARRAY(Text) nullable
+
+    # ── FK context ────────────────────────────────────────────────────────────
+    source_collection_id: int | None  # Run.source_collection_id FK nullable
+    dataset_id: int | None  # Run.dataset_id           FK nullable
+    recipe_id: int | None  # Run.recipe_id            FK nullable
+
+    # ── Configuration ─────────────────────────────────────────────────────────
+    config: dict | None  # Run.config          JSONB nullable
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+    status: str  # Run.status          Text NOT NULL
+    started_at: datetime | None  # Run.started_at      DateTime tz nullable
+    ended_at: datetime | None  # Run.ended_at        DateTime tz nullable
+    triggered_by: int | None  # Run.triggered_by    FK → users.id nullable
+    trigger_context: dict | None  # Run.trigger_context JSONB nullable

@@ -1,4 +1,4 @@
-"""Runs router — S005-F-005, extended S008-F-008, extended S018-F-018.
+"""Runs router — S005-F-005, extended S008-F-008, extended S018-F-018, extended S048-F-048.
 
 Provides two API surfaces for Dagster run management:
 
@@ -7,8 +7,9 @@ Provides two API surfaces for Dagster run management:
     Protected by JWT Bearer auth (F-008).
 
   runs_router (prefix="/api/runs", tags=["runs"]):
-    POST ""            — trigger an asset backfill (extract_mineru, chunks, or attr_quality, HTTP 202 Accepted, F-018/F-024/F-027)
-    GET  /{run_id}     — poll current status of a Dagster run (HTTP 200)
+    POST ""                          — trigger an asset backfill (extract_mineru, chunks, or attr_quality, HTTP 202 Accepted, F-018/F-024/F-027)
+    GET  /{id}                       — return full Postgres run record (HTTP 200, F-048)
+    GET  /dagster/{dagster_run_id}   — poll current status of a Dagster run (HTTP 200, F-005)
     Protected by JWT Bearer auth (F-008).
 
 Deferrals:
@@ -37,6 +38,7 @@ from dataplat_api.schemas.runs import (
     LaunchHelloWorldResponse,
     RunCreate,
     RunCreateResponse,
+    RunDetailResponse,
     RunStatusResponse,
 )
 
@@ -217,7 +219,39 @@ async def trigger_extract_run(
 
 
 @runs_router.get(
-    "/{run_id}",
+    "/{id}",
+    response_model=RunDetailResponse,
+    summary="Get run record by Postgres id",
+    description=(
+        "Return the full Postgres run record for the authenticated owner. "
+        "Owner-scoping: combines ``id == ?`` AND ``triggered_by == ?`` so "
+        "that a non-existent id and an id owned by another user both return 404. "
+        "Requires a valid Bearer JWT (F-008)."
+    ),
+)
+async def get_run_detail(
+    id: int,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> RunDetailResponse:
+    """Return the full Postgres run record for the authenticated owner (F-048).
+
+    Returns HTTP 200 with all 14 ORM-mapped columns of the run row.
+    Returns HTTP 404 if the run does not exist OR is owned by a different user
+    (single-query 404-collapse — no information leak).
+    Requires a valid Bearer JWT (F-008).
+    """
+    result = await session.execute(
+        select(Run).where(Run.id == id).where(Run.triggered_by == current_user.id)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return RunDetailResponse.model_validate(row)
+
+
+@runs_router.get(
+    "/dagster/{dagster_run_id}",
     response_model=RunStatusResponse,
     summary="Get Dagster run status",
     description=(
@@ -229,7 +263,7 @@ async def trigger_extract_run(
     ),
 )
 async def get_run_status(
-    run_id: str,
+    dagster_run_id: str,
     gateway: DagsterGateway = Depends(get_dagster_gateway),
     current_user: User = Depends(get_current_user),
 ) -> RunStatusResponse:
@@ -244,7 +278,7 @@ async def get_run_status(
     Requires a valid Bearer JWT (F-008).
     """
     try:
-        result = await gateway.get_run_status(run_id)
+        result = await gateway.get_run_status(dagster_run_id)
         return RunStatusResponse(**result)
     except DagsterRunNotFoundError:
         # Catch specific subclass BEFORE the base class (agreed.md §4.2).
