@@ -1,6 +1,7 @@
-"""Datasets router — S042-F-042.
+"""Datasets router — S042-F-042 + S045-F-045.
 
 Provides:
+  GET  /api/datasets               — list all caller-owned datasets (F-045).
   POST /api/datasets/{recipe_id}/materialize — create a Dataset row and launch a
       Dagster backfill for the stub ``dataset`` asset (F-042).
 
@@ -40,9 +41,51 @@ from dataplat_api.dagster.dependencies import get_dagster_gateway
 from dataplat_api.dagster.gateway import DagsterGateway, DagsterGatewayError
 from dataplat_api.db.models import Dataset, Recipe, User
 from dataplat_api.db.session import get_session
-from dataplat_api.schemas.datasets import MaterializeResponse
+from dataplat_api.schemas.datasets import (
+    DatasetListItem,
+    DatasetListResponse,
+    MaterializeResponse,
+)
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
+
+
+@router.get("", response_model=DatasetListResponse)
+async def list_datasets(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> DatasetListResponse:
+    """List all datasets owned by the authenticated user.
+
+    Returns all dataset rows where ``materialized_by == current_user.id``,
+    ordered newest-completed-first: ``materialized_at DESC NULLS LAST, id DESC``.
+    ``NULLS LAST`` pushes in-flight (status='pending'/'running') datasets to the
+    bottom, since their ``materialized_at`` is NULL until F-044 flips status='done'.
+    Failed rows (status='failed') are included as audit tombstones.
+
+    No pagination for MVP — dataset counts per user are expected to be small.
+    ``total`` is included in the response envelope for forward-compatibility.
+
+    Auth required (F-008).
+    """
+    # Query 1: all rows for this owner, newest completed first.
+    result = await session.execute(
+        select(Dataset)
+        .where(Dataset.materialized_by == current_user.id)
+        .order_by(Dataset.materialized_at.desc().nulls_last(), Dataset.id.desc())
+    )
+    rows = result.scalars().all()
+
+    # Query 2: total count over the full owner-filtered set.
+    count_result = await session.execute(
+        select(func.count())
+        .select_from(Dataset)
+        .where(Dataset.materialized_by == current_user.id)
+    )
+    total = count_result.scalar_one()
+
+    items = [DatasetListItem.model_validate(row) for row in rows]
+    return DatasetListResponse(items=items, total=total)
 
 
 @router.post(

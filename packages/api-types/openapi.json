@@ -1223,6 +1223,33 @@
         }
       }
     },
+    "/api/datasets": {
+      "get": {
+        "tags": [
+          "datasets"
+        ],
+        "summary": "List Datasets",
+        "description": "List all datasets owned by the authenticated user.\n\nReturns all dataset rows where ``materialized_by == current_user.id``,\nordered newest-completed-first: ``materialized_at DESC NULLS LAST, id DESC``.\n``NULLS LAST`` pushes in-flight (status='pending'/'running') datasets to the\nbottom, since their ``materialized_at`` is NULL until F-044 flips status='done'.\nFailed rows (status='failed') are included as audit tombstones.\n\nNo pagination for MVP \u2014 dataset counts per user are expected to be small.\n``total`` is included in the response envelope for forward-compatibility.\n\nAuth required (F-008).",
+        "operationId": "list_datasets_api_datasets_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetListResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
+      }
+    },
     "/api/datasets/{recipe_id}/materialize": {
       "post": {
         "tags": [
@@ -1982,6 +2009,101 @@
         ],
         "title": "DagsterStatusResponse",
         "description": "Response body for GET /api/admin/dagster-status.\n\nWhen packages/api-types/ codegen is wired (first web-facing sprint),\nthis model will automatically produce the corresponding TypeScript type\nvia `make codegen` \u2014 no changes needed here at that point."
+      },
+      "DatasetListItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "recipe_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipe Id"
+          },
+          "version_tag": {
+            "type": "string",
+            "title": "Version Tag"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "sample_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample Count"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "materialized_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Materialized At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "recipe_id",
+          "version_tag",
+          "status",
+          "sample_count",
+          "size_bytes",
+          "materialized_at"
+        ],
+        "title": "DatasetListItem",
+        "description": "Slim response schema for a single dataset in a list context.\n\nUsed by GET /api/datasets (F-045).  Exposes the 7 fields required by\nF-045's verification[]: id, recipe_id, version_tag, status, sample_count,\nsize_bytes, materialized_at.\n\nOmits detail-level fields (recipe_snapshot, hf_repo_uri, dataset_card_md,\ndagster_run_id, stats, materialized_by) \u2014 those are deferred to F-046.\n\n``recipe_id`` is nullable to match the DB schema (FK nullable=True).\nIn practice every row has a recipe_id set by F-042; frontend/client must\nguard against None before constructing a recipe detail URL.\n\n``sample_count``, ``size_bytes``, and ``materialized_at`` are nullable:\nthey are None until materialization completes (F-044 sets them on status='done')."
+      },
+      "DatasetListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DatasetListItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "DatasetListResponse",
+        "description": "Envelope for GET /api/datasets (F-045).\n\n``total`` is the count of ALL datasets owned by the caller.  Included for\nforward-compatibility: a future paginated version can return a subset in\n``items`` while keeping ``total`` accurate, without a breaking schema change."
       },
       "DocumentVariantRead": {
         "properties": {
