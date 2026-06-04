@@ -1,7 +1,8 @@
-"""Datasets router — S042-F-042 + S045-F-045.
+"""Datasets router — S042-F-042 + S045-F-045 + S046-F-046.
 
 Provides:
   GET  /api/datasets               — list all caller-owned datasets (F-045).
+  GET  /api/datasets/{id}          — full dataset record for one dataset (F-046).
   POST /api/datasets/{recipe_id}/materialize — create a Dataset row and launch a
       Dagster backfill for the stub ``dataset`` asset (F-042).
 
@@ -42,6 +43,7 @@ from dataplat_api.dagster.gateway import DagsterGateway, DagsterGatewayError
 from dataplat_api.db.models import Dataset, Recipe, User
 from dataplat_api.db.session import get_session
 from dataplat_api.schemas.datasets import (
+    DatasetDetailResponse,
     DatasetListItem,
     DatasetListResponse,
     MaterializeResponse,
@@ -86,6 +88,40 @@ async def list_datasets(
 
     items = [DatasetListItem.model_validate(row) for row in rows]
     return DatasetListResponse(items=items, total=total)
+
+
+@router.get("/{id}", response_model=DatasetDetailResponse)
+async def get_dataset(
+    id: int,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> DatasetDetailResponse:
+    """Return the full dataset record for the authenticated owner.
+
+    Owner-scoping: combines ``id == ?`` AND ``materialized_by == ?`` in one
+    query so that a non-existent id and an id owned by another user both
+    return 404 (no-enumeration-leak, mirrors get_recipe).
+    ``materialized_by`` is the owner FK on Dataset (analogous to
+    ``owner_id`` on Recipe).
+
+    MAINTENANCE NOTE: Do NOT substitute ``owner_id`` for ``materialized_by``
+    here.  The ``Dataset`` ORM model has no ``owner_id`` column; the owner FK
+    is ``Dataset.materialized_by`` (BigInteger FK → users.id), set by
+    ``materialize_dataset()`` as ``materialized_by=current_user.id``.
+    Using ``owner_id`` would cause an AttributeError at runtime.
+    """
+    result = await session.execute(
+        select(Dataset)
+        .where(Dataset.id == id)
+        .where(Dataset.materialized_by == current_user.id)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dataset not found",
+        )
+    return DatasetDetailResponse.model_validate(row)
 
 
 @router.post(

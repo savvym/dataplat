@@ -1,9 +1,10 @@
-"""Dataset schemas — S042-F-042 + S045-F-045.
+"""Dataset schemas — S042-F-042 + S045-F-045 + S046-F-046.
 
 Schemas:
   - MaterializeResponse: response body for POST /api/datasets/{recipe_id}/materialize.
   - DatasetListItem: slim response schema for a single dataset in a list context.
   - DatasetListResponse: envelope for GET /api/datasets (F-045).
+  - DatasetDetailResponse: full dataset record for GET /api/datasets/{id} (F-046).
 """
 
 from __future__ import annotations
@@ -65,3 +66,44 @@ class DatasetListResponse(BaseModel):
 
     items: list[DatasetListItem]
     total: int
+
+
+class DatasetDetailResponse(BaseModel):
+    """Full dataset record for GET /api/datasets/{id} (F-046).
+
+    Exposes all 13 ORM-mapped columns of the ``dataset`` table.
+    ``recipe_snapshot`` is the frozen deep-copy of ``recipe.definition``
+    captured at materialize time — always a dict (JSONB NOT NULL).
+    ``stats`` is nullable JSONB written by the IO manager on status='done'.
+    ``hf_repo_uri`` is the S3 URI assigned during materialize (never null
+    for any row that survived the insert; set to '__pending__' briefly
+    in-transaction then replaced before commit — so always a non-null str).
+    ``dataset_card_md`` is nullable text; not populated in MVP.
+    ``materialized_at`` is None until status='done' (set by F-044 IO manager).
+    ``dagster_run_id`` is None on status='failed' rows where Step 9 was not reached.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    # ── Identity ──────────────────────────────────────────────────────────
+    id: int  # Dataset.id              BigInteger PK
+    recipe_id: int | None  # Dataset.recipe_id       BigInteger FK nullable
+
+    # ── Version / routing ─────────────────────────────────────────────────
+    version_tag: str  # Dataset.version_tag     Text NOT NULL
+    hf_repo_uri: str  # Dataset.hf_repo_uri     Text NOT NULL
+
+    # ── Frozen recipe contract ────────────────────────────────────────────
+    recipe_snapshot: dict  # Dataset.recipe_snapshot JSONB NOT NULL
+
+    # ── Materialization outputs ───────────────────────────────────────────
+    sample_count: int | None  # Dataset.sample_count    BigInteger nullable
+    size_bytes: int | None  # Dataset.size_bytes      BigInteger nullable
+    stats: dict | None  # Dataset.stats           JSONB nullable
+    dataset_card_md: str | None  # Dataset.dataset_card_md Text nullable
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────
+    status: str  # Dataset.status          Text NOT NULL
+    materialized_by: int | None  # Dataset.materialized_by BigInteger FK nullable
+    materialized_at: datetime | None  # Dataset.materialized_at DateTime nullable
+    dagster_run_id: str | None  # Dataset.dagster_run_id  Text nullable

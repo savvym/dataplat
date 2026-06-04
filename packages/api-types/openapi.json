@@ -1250,6 +1250,54 @@
         ]
       }
     },
+    "/api/datasets/{id}": {
+      "get": {
+        "tags": [
+          "datasets"
+        ],
+        "summary": "Get Dataset",
+        "description": "Return the full dataset record for the authenticated owner.\n\nOwner-scoping: combines ``id == ?`` AND ``materialized_by == ?`` in one\nquery so that a non-existent id and an id owned by another user both\nreturn 404 (no-enumeration-leak, mirrors get_recipe).\n``materialized_by`` is the owner FK on Dataset (analogous to\n``owner_id`` on Recipe).\n\nMAINTENANCE NOTE: Do NOT substitute ``owner_id`` for ``materialized_by``\nhere.  The ``Dataset`` ORM model has no ``owner_id`` column; the owner FK\nis ``Dataset.materialized_by`` (BigInteger FK \u2192 users.id), set by\n``materialize_dataset()`` as ``materialized_by=current_user.id``.\nUsing ``owner_id`` would cause an AttributeError at runtime.",
+        "operationId": "get_dataset_api_datasets__id__get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetDetailResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/datasets/{recipe_id}/materialize": {
       "post": {
         "tags": [
@@ -2009,6 +2057,139 @@
         ],
         "title": "DagsterStatusResponse",
         "description": "Response body for GET /api/admin/dagster-status.\n\nWhen packages/api-types/ codegen is wired (first web-facing sprint),\nthis model will automatically produce the corresponding TypeScript type\nvia `make codegen` \u2014 no changes needed here at that point."
+      },
+      "DatasetDetailResponse": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "recipe_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipe Id"
+          },
+          "version_tag": {
+            "type": "string",
+            "title": "Version Tag"
+          },
+          "hf_repo_uri": {
+            "type": "string",
+            "title": "Hf Repo Uri"
+          },
+          "recipe_snapshot": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Recipe Snapshot"
+          },
+          "sample_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample Count"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "stats": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stats"
+          },
+          "dataset_card_md": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Card Md"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "materialized_by": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Materialized By"
+          },
+          "materialized_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Materialized At"
+          },
+          "dagster_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dagster Run Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "recipe_id",
+          "version_tag",
+          "hf_repo_uri",
+          "recipe_snapshot",
+          "sample_count",
+          "size_bytes",
+          "stats",
+          "dataset_card_md",
+          "status",
+          "materialized_by",
+          "materialized_at",
+          "dagster_run_id"
+        ],
+        "title": "DatasetDetailResponse",
+        "description": "Full dataset record for GET /api/datasets/{id} (F-046).\n\nExposes all 13 ORM-mapped columns of the ``dataset`` table.\n``recipe_snapshot`` is the frozen deep-copy of ``recipe.definition``\ncaptured at materialize time \u2014 always a dict (JSONB NOT NULL).\n``stats`` is nullable JSONB written by the IO manager on status='done'.\n``hf_repo_uri`` is the S3 URI assigned during materialize (never null\nfor any row that survived the insert; set to '__pending__' briefly\nin-transaction then replaced before commit \u2014 so always a non-null str).\n``dataset_card_md`` is nullable text; not populated in MVP.\n``materialized_at`` is None until status='done' (set by F-044 IO manager).\n``dagster_run_id`` is None on status='failed' rows where Step 9 was not reached."
       },
       "DatasetListItem": {
         "properties": {
