@@ -323,8 +323,7 @@ def attr_lang(context: AssetExecutionContext) -> list[dict[str, Any]]:
 
     if len(rows) == 0:
         context.log.warning(
-            "attr_lang: zero rows detected for source_id=%d — "
-            "chunks may not yet exist",
+            "attr_lang: zero rows detected for source_id=%d — chunks may not yet exist",
             source_id,
         )
 
@@ -434,6 +433,7 @@ def dataset(context: AssetExecutionContext) -> DatasetOutput:
     db_row = fetch_dataset_row(recipe_id, version_tag)
     dataset_id: int = db_row["id"]
     recipe_snapshot: dict[str, Any] = db_row["recipe_snapshot"]
+    dataset_card_md: str | None = db_row["dataset_card_md"]
     context.log.info(
         "dataset: resolved dataset_id=%d hf_repo_uri=%s",
         dataset_id,
@@ -442,7 +442,9 @@ def dataset(context: AssetExecutionContext) -> DatasetOutput:
 
     # Extract config from frozen recipe_snapshot.
     filter_sql: str | None = recipe_snapshot.get("filter", {}).get("where")
-    template_config: dict[str, Any] = recipe_snapshot.get("schema", {}).get("config", {})
+    template_config: dict[str, Any] = recipe_snapshot.get("schema", {}).get(
+        "config", {}
+    )
     prompt_template: str = template_config.get(
         "prompt_template",
         (
@@ -452,9 +454,7 @@ def dataset(context: AssetExecutionContext) -> DatasetOutput:
         ),
     )
     val_ratio: float = (
-        recipe_snapshot.get("output", {})
-        .get("splits", {})
-        .get("validation", 0.1)
+        recipe_snapshot.get("output", {}).get("splits", {}).get("validation", 0.1)
     )
     fallback_on_failure: bool = template_config.get("fallback_on_failure", True)
     max_tokens: int = template_config.get("max_tokens", 512)
@@ -505,9 +505,7 @@ def dataset(context: AssetExecutionContext) -> DatasetOutput:
     )
 
     train_rows, val_rows = deterministic_split(qa_rows, val_ratio)
-    context.log.info(
-        "dataset: split — train=%d val=%d", len(train_rows), len(val_rows)
-    )
+    context.log.info("dataset: split — train=%d val=%d", len(train_rows), len(val_rows))
 
     context.add_output_metadata(
         {
@@ -525,6 +523,7 @@ def dataset(context: AssetExecutionContext) -> DatasetOutput:
         recipe_snapshot=recipe_snapshot,
         dataset_id=dataset_id,
         version_tag=version_tag,
+        dataset_card_md=dataset_card_md,
     )
 
 
@@ -548,7 +547,15 @@ def hello_world_job() -> None:
 
 defs = Definitions(
     jobs=[hello_world_job],
-    assets=[source_asset, extract_mineru, chunks, attr_quality, attr_lang, attr_minhash, dataset],
+    assets=[
+        source_asset,
+        extract_mineru,
+        chunks,
+        attr_quality,
+        attr_lang,
+        attr_minhash,
+        dataset,
+    ],
     resources={
         "lance_chunks_io": LanceChunksIOManager(),
         "hf_dataset_io": HFDatasetIOManager(),

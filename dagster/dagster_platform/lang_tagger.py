@@ -51,11 +51,11 @@ def _build_lance_storage_options() -> dict[str, str]:
     Reads MINIO_* from os.environ (same pattern as chunker.py and quality_tagger.py).
     """
     return {
-        "aws_access_key_id":     os.environ["MINIO_ROOT_USER"],
+        "aws_access_key_id": os.environ["MINIO_ROOT_USER"],
         "aws_secret_access_key": os.environ["MINIO_ROOT_PASSWORD"],
-        "endpoint":              f"http://{os.environ['MINIO_ENDPOINT']}",
-        "aws_region":            "us-east-1",
-        "allow_http":            "true",
+        "endpoint": f"http://{os.environ['MINIO_ENDPOINT']}",
+        "aws_region": "us-east-1",
+        "allow_http": "true",
     }
 
 
@@ -93,9 +93,7 @@ def detect_language(text: str) -> tuple[str, float]:
         conf: float = max(0.0, min(1.0, float(result["score"])))
         return (code, conf)
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "fasttext detect() failed for text (len=%d): %s", len(text), exc
-        )
+        logger.warning("fasttext detect() failed for text (len=%d): %s", len(text), exc)
         return ("und", 0.0)
 
 
@@ -126,16 +124,9 @@ def compute_lang_scores(source_id: int) -> list[dict]:
     table = db.open_table("chunks")
 
     where_clause = f"source_id = {source_id} AND producer_asset = 'chunks'"
-    rows = (
-        table.search()
-        .where(where_clause)
-        .select(["chunk_id", "text"])
-        .to_list()
-    )
+    rows = table.search().where(where_clause).select(["chunk_id", "text"]).to_list()
     if not rows:
-        logger.info(
-            "compute_lang_scores: no rows found for source_id=%d", source_id
-        )
+        logger.info("compute_lang_scores: no rows found for source_id=%d", source_id)
         return []
 
     result: list[dict] = []
@@ -220,12 +211,7 @@ def _lang_update(
         source_id:    The source being processed (used only in log messages).
         where_clause: SQL WHERE clause identifying rows to update.
     """
-    rows = (
-        table.search()
-        .where(where_clause)
-        .select(["chunk_id", "text"])
-        .to_list()
-    )
+    rows = table.search().where(where_clause).select(["chunk_id", "text"]).to_list()
     if not rows:
         logger.info(
             "_lang_update: no rows found for source_id=%d — skipping", source_id

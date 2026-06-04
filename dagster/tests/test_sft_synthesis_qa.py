@@ -32,6 +32,7 @@ from dagster_platform.sft_synthesis_qa import (
     deterministic_split,
     parse_dataset_partition_key,
     read_chunks_from_lance,
+    update_dataset_row,
 )
 
 
@@ -393,12 +394,25 @@ def test_no_direct_llm_sdk_imports_hf_dataset_io_manager() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_db_cursor(dataset_id: int, recipe_snapshot: dict[str, Any]) -> MagicMock:
-    """Build a mock psycopg2 connection/cursor that returns a dataset row."""
+def _make_mock_db_cursor(
+    dataset_id: int,
+    recipe_snapshot: dict[str, Any],
+    dataset_card_md: str | None = None,
+) -> MagicMock:
+    """Build a mock psycopg2 connection/cursor that returns a dataset row.
+
+    Returns 4 columns: (id, recipe_snapshot, hf_repo_uri, dataset_card_md)
+    matching the updated fetch_dataset_row() SELECT (F-044).
+    """
     mock_cursor = MagicMock()
     mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
     mock_cursor.__exit__ = MagicMock(return_value=False)
-    mock_cursor.fetchone.return_value = (dataset_id, recipe_snapshot, f"s3://datasets/{dataset_id}_v1")
+    mock_cursor.fetchone.return_value = (
+        dataset_id,
+        recipe_snapshot,
+        f"s3://datasets/{dataset_id}_v1",
+        dataset_card_md,
+    )
 
     mock_conn = MagicMock()
     mock_conn.cursor.return_value = mock_cursor
@@ -424,7 +438,7 @@ def test_dataset_asset_end_to_end(monkeypatch: pytest.MonkeyPatch) -> None:
         "filter": {"where": "attr_quality_score > 0.5"},
         "schema": {
             "config": {
-                "prompt_template": "Q&A for: {chunk_text}\nJSON: {{\"instruction\":\"...\",\"output\":\"...\"}}",
+                "prompt_template": 'Q&A for: {chunk_text}\nJSON: {{"instruction":"...","output":"..."}}',
                 "max_tokens": 256,
                 "fallback_on_failure": True,
             }
@@ -498,3 +512,124 @@ def test_dataset_asset_end_to_end_llm_fallback(monkeypatch: pytest.MonkeyPatch) 
     # All chunks skipped due to parse failure with fallback=True
     assert len(output.train_rows) == 0
     assert len(output.val_rows) == 0
+
+
+# ---------------------------------------------------------------------------
+# F-044 — update_dataset_row() unit tests
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_psycopg2_conn() -> tuple[MagicMock, MagicMock, MagicMock]:
+    """Build a mock psycopg2 connection/cursor chain for update_dataset_row tests.
+
+    Returns (mock_conn, mock_cursor, mock_context_manager_cursor) where:
+    - mock_conn: the connection returned by psycopg2.connect(...)
+    - mock_cursor: the cursor returned by conn.cursor() context manager
+    """
+    mock_cursor = MagicMock()
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.commit = MagicMock()
+    mock_conn.close = MagicMock()
+
+    return mock_conn, mock_cursor
+
+
+def test_update_dataset_row_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B1: update_dataset_row executes correct SQL with correct parameters."""
+    monkeypatch.setenv("PLATFORM_DB_URL", "postgresql://test:test@db/test")
+
+    mock_conn, mock_cursor = _make_mock_psycopg2_conn()
+
+    with patch("psycopg2.connect", return_value=mock_conn):
+        update_dataset_row(dataset_id=42, sample_count=100, size_bytes=2048)
+
+    # Verify execute was called once
+    mock_cursor.execute.assert_called_once()
+    call_args = mock_cursor.execute.call_args
+
+    # First arg: the SQL string
+    sql: str = call_args.args[0]
+    # Second arg: the parameters tuple
+    params: tuple = call_args.args[1]
+
+    # SQL must contain required clauses
+    assert "status = 'done'" in sql, f"SQL missing status='done': {sql!r}"
+    assert "sample_count = %s" in sql, f"SQL missing sample_count: {sql!r}"
+    assert "size_bytes = %s" in sql, f"SQL missing size_bytes: {sql!r}"
+    assert "materialized_at = NOW()" in sql, f"SQL missing materialized_at: {sql!r}"
+    assert "WHERE id = %s" in sql, f"SQL missing WHERE id: {sql!r}"
+    assert "AND status = 'pending'" in sql, (
+        f"SQL missing AND status='pending' (M1): {sql!r}"
+    )
+
+    # Parameters: (sample_count, size_bytes, dataset_id)
+    assert params == (100, 2048, 42), f"Unexpected params: {params}"
+
+
+def test_update_dataset_row_commits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B2: After execute, conn.commit() is called before conn.close()."""
+    monkeypatch.setenv("PLATFORM_DB_URL", "postgresql://test:test@db/test")
+
+    mock_conn, mock_cursor = _make_mock_psycopg2_conn()
+    call_order: list[str] = []
+
+    mock_conn.commit.side_effect = lambda: call_order.append("commit")
+    mock_conn.close.side_effect = lambda: call_order.append("close")
+
+    with patch("psycopg2.connect", return_value=mock_conn):
+        update_dataset_row(dataset_id=1, sample_count=10, size_bytes=512)
+
+    assert "commit" in call_order, "conn.commit() was not called"
+    assert "close" in call_order, "conn.close() was not called"
+    assert call_order.index("commit") < call_order.index("close"), (
+        f"commit must come before close; got {call_order}"
+    )
+
+
+def test_update_dataset_row_closes_on_db_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B3: If cur.execute raises psycopg2.OperationalError, conn.close() still called and exception propagates."""
+    import psycopg2 as pg2
+
+    monkeypatch.setenv("PLATFORM_DB_URL", "postgresql://test:test@db/test")
+
+    mock_conn, mock_cursor = _make_mock_psycopg2_conn()
+    mock_cursor.execute.side_effect = pg2.OperationalError("DB connection refused")
+
+    with patch("psycopg2.connect", return_value=mock_conn):
+        with pytest.raises(pg2.OperationalError, match="DB connection refused"):
+            update_dataset_row(dataset_id=1, sample_count=5, size_bytes=256)
+
+    # close() must be called despite the exception (finally block)
+    mock_conn.close.assert_called_once()
+
+
+def test_update_dataset_row_no_context_param() -> None:
+    """NIT-4: update_dataset_row signature must NOT include a 'context' parameter."""
+    import inspect
+
+    sig = inspect.signature(update_dataset_row)
+    assert "context" not in sig.parameters, (
+        "update_dataset_row must not accept 'context' parameter (NIT-4 from agreed.md)"
+    )
+
+
+def test_update_dataset_row_sql_contains_and_status_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B1 extra: SQL string-level assertion that AND status = 'pending' is present (M1)."""
+    monkeypatch.setenv("PLATFORM_DB_URL", "postgresql://test:test@db/test")
+
+    mock_conn, mock_cursor = _make_mock_psycopg2_conn()
+
+    with patch("psycopg2.connect", return_value=mock_conn):
+        update_dataset_row(dataset_id=5, sample_count=20, size_bytes=1024)
+
+    sql = mock_cursor.execute.call_args.args[0]
+    # Case-insensitive check for the idempotency guard
+    assert "status = 'pending'" in sql.lower() or "status='pending'" in sql.lower(), (
+        f"AND status = 'pending' predicate missing from SQL (M1): {sql!r}"
+    )

@@ -47,41 +47,42 @@ _ENCODER = tiktoken.get_encoding("cl100k_base")
 # Do NOT add nullable=False to any field — strict Arrow nullability check in
 # lancedb's create_table(exist_ok=True) would raise if schema mismatches.
 # ---------------------------------------------------------------------------
-CHUNKS_SCHEMA: pa.Schema = pa.schema([
-    # === Identifiers ===
-    ("chunk_id",                pa.string()),        # uuid or source+offset derived
-    ("source_id",               pa.int64()),         # denormalized for filter efficiency
-    ("source_collection_id",    pa.int64()),
-    ("producer_asset",          pa.string()),        # "chunks" | "augment_translate_en" etc.
-    ("producer_version",        pa.string()),
-
-    # === Content ===
-    ("text",                    pa.large_string()),  # linearized chunk text
-    ("token_count",             pa.int32()),
-    ("docling_refs",            pa.string()),        # NodeItem path in DoclingDocument
-    ("source_refs",             pa.string()),        # JSON: {page, bbox, char_range}
-
-    # === Provenance ===
-    ("augmented_from",          pa.string()),        # parent chunk_id (NULL = original)
-    ("augmenter_id",            pa.string()),        # augmenter operator id
-    ("augmenter_config_hash",   pa.string()),
-
-    # === Attribute columns (initial set; new attributes = new columns) ===
-    ("attr_quality_score",      pa.float32()),
-    ("attr_quality_provider",   pa.string()),        # 'gpt-4o-mini' | 'qwen-judge' etc.
-    ("attr_lang_code",          pa.string()),
-    ("attr_lang_confidence",    pa.float32()),
-    ("attr_minhash_signature",  pa.list_(pa.uint64())),
-    ("attr_minhash_cluster_id", pa.int64()),
-    ("attr_minhash_is_head",    pa.bool_()),
-    ("attr_pii_has_pii",        pa.bool_()),
-    ("attr_pii_categories",     pa.list_(pa.string())),
-    ("attr_embed_vector",       pa.list_(pa.float32(), 1024)),  # Lance native vector index
-
-    # === Timestamps ===
-    ("created_at",              pa.timestamp("ms")),
-    ("updated_at",              pa.timestamp("ms")),
-])
+CHUNKS_SCHEMA: pa.Schema = pa.schema(
+    [
+        # === Identifiers ===
+        ("chunk_id", pa.string()),  # uuid or source+offset derived
+        ("source_id", pa.int64()),  # denormalized for filter efficiency
+        ("source_collection_id", pa.int64()),
+        ("producer_asset", pa.string()),  # "chunks" | "augment_translate_en" etc.
+        ("producer_version", pa.string()),
+        # === Content ===
+        ("text", pa.large_string()),  # linearized chunk text
+        ("token_count", pa.int32()),
+        ("docling_refs", pa.string()),  # NodeItem path in DoclingDocument
+        ("source_refs", pa.string()),  # JSON: {page, bbox, char_range}
+        # === Provenance ===
+        ("augmented_from", pa.string()),  # parent chunk_id (NULL = original)
+        ("augmenter_id", pa.string()),  # augmenter operator id
+        ("augmenter_config_hash", pa.string()),
+        # === Attribute columns (initial set; new attributes = new columns) ===
+        ("attr_quality_score", pa.float32()),
+        ("attr_quality_provider", pa.string()),  # 'gpt-4o-mini' | 'qwen-judge' etc.
+        ("attr_lang_code", pa.string()),
+        ("attr_lang_confidence", pa.float32()),
+        ("attr_minhash_signature", pa.list_(pa.uint64())),
+        ("attr_minhash_cluster_id", pa.int64()),
+        ("attr_minhash_is_head", pa.bool_()),
+        ("attr_pii_has_pii", pa.bool_()),
+        ("attr_pii_categories", pa.list_(pa.string())),
+        (
+            "attr_embed_vector",
+            pa.list_(pa.float32(), 1024),
+        ),  # Lance native vector index
+        # === Timestamps ===
+        ("created_at", pa.timestamp("ms")),
+        ("updated_at", pa.timestamp("ms")),
+    ]
+)
 
 
 # ---------------------------------------------------------------------------
@@ -97,11 +98,11 @@ def build_lance_storage_options() -> dict[str, str]:
     lancedb==0.30.2 (same as apps/api/dataplat_api/storage/lance.py).
     """
     return {
-        "aws_access_key_id":     os.environ["MINIO_ROOT_USER"],
+        "aws_access_key_id": os.environ["MINIO_ROOT_USER"],
         "aws_secret_access_key": os.environ["MINIO_ROOT_PASSWORD"],
-        "endpoint":              f"http://{os.environ['MINIO_ENDPOINT']}",
-        "aws_region":            "us-east-1",
-        "allow_http":            "true",
+        "endpoint": f"http://{os.environ['MINIO_ENDPOINT']}",
+        "aws_region": "us-east-1",
+        "allow_http": "true",
     }
 
 
@@ -181,32 +182,34 @@ def fixed_size_chunk(
     for start in range(0, len(token_ids), TOKEN_BUDGET):
         window = token_ids[start : start + TOKEN_BUDGET]
         chunk_text = _ENCODER.decode(window)
-        rows.append({
-            "chunk_id":               f"{source_id}_{seq}",
-            "source_id":              source_id,
-            "source_collection_id":   collection_id,
-            "producer_asset":         "chunks",
-            "producer_version":       CHUNKER_VERSION,
-            "text":                   chunk_text,
-            "token_count":            len(window),
-            "docling_refs":           "",
-            "source_refs":            "",
-            "augmented_from":         None,
-            "augmenter_id":           None,
-            "augmenter_config_hash":  None,
-            "attr_quality_score":     None,
-            "attr_quality_provider":  None,
-            "attr_lang_code":         None,
-            "attr_lang_confidence":   None,
-            "attr_minhash_signature": None,
-            "attr_minhash_cluster_id": None,
-            "attr_minhash_is_head":   None,
-            "attr_pii_has_pii":       None,
-            "attr_pii_categories":    None,
-            "attr_embed_vector":      None,
-            "created_at":             now,
-            "updated_at":             now,
-        })
+        rows.append(
+            {
+                "chunk_id": f"{source_id}_{seq}",
+                "source_id": source_id,
+                "source_collection_id": collection_id,
+                "producer_asset": "chunks",
+                "producer_version": CHUNKER_VERSION,
+                "text": chunk_text,
+                "token_count": len(window),
+                "docling_refs": "",
+                "source_refs": "",
+                "augmented_from": None,
+                "augmenter_id": None,
+                "augmenter_config_hash": None,
+                "attr_quality_score": None,
+                "attr_quality_provider": None,
+                "attr_lang_code": None,
+                "attr_lang_confidence": None,
+                "attr_minhash_signature": None,
+                "attr_minhash_cluster_id": None,
+                "attr_minhash_is_head": None,
+                "attr_pii_has_pii": None,
+                "attr_pii_categories": None,
+                "attr_embed_vector": None,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
         seq += 1
     return rows
 

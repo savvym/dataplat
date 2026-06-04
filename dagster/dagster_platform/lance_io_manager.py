@@ -20,6 +20,7 @@ F-031 column mode (D3a — direct partial merge, D2 probe exit 0):
   - Schema inferred from keys of the first dict (chunk_id + tagger columns only).
   - Naturally concurrency-safe: each tagger payload contains only its own columns.
 """
+
 from __future__ import annotations
 
 import logging
@@ -141,7 +142,9 @@ class LanceChunksIOManager(IOManager):
         # D11 / F2 fix: Empty list early-return — skip write entirely.
         # Mode-aware: chunks emits "row_skipped"; tagger assets emit "column_skipped".
         if not obj:
-            mode_label = "row_skipped" if producer_asset == "chunks" else "column_skipped"
+            mode_label = (
+                "row_skipped" if producer_asset == "chunks" else "column_skipped"
+            )
             context.log.info(
                 "LanceChunksIOManager: obj is empty, skipping write (mode=%s)",
                 mode_label,

@@ -48,11 +48,15 @@ class DatasetOutput:
     """Typed payload returned by the `dataset` asset and consumed by HFDatasetIOManager.
 
     Attributes:
-        train_rows:      List of dicts with keys "instruction", "output", "chunk_id".
-        val_rows:        List of dicts with keys "instruction", "output", "chunk_id".
-        recipe_snapshot: Frozen copy from Postgres dataset.recipe_snapshot (set by F-042).
-        dataset_id:      DB-assigned dataset.id (int).
-        version_tag:     Version string, e.g. "v1".
+        train_rows:       List of dicts with keys "instruction", "output", "chunk_id".
+        val_rows:         List of dicts with keys "instruction", "output", "chunk_id".
+        recipe_snapshot:  Frozen copy from Postgres dataset.recipe_snapshot (set by F-042).
+        dataset_id:       DB-assigned dataset.id (int).
+        version_tag:      Version string, e.g. "v1".
+        dataset_card_md:  Optional Markdown content for README.md (F-044). When None,
+                          HFDatasetIOManager uses a stub string. Placed last because it
+                          has a default (Python requires default fields after non-default
+                          fields in a dataclass).
     """
 
     train_rows: list[dict[str, Any]]
@@ -60,6 +64,7 @@ class DatasetOutput:
     recipe_snapshot: dict[str, Any]
     dataset_id: int
     version_tag: str
+    dataset_card_md: str | None = None  # NEW in F-044; must be last (has default)
 
 
 # ---------------------------------------------------------------------------
@@ -107,16 +112,18 @@ def parse_dataset_partition_key(partition_key: str) -> tuple[int, str]:
 def fetch_dataset_row(recipe_id: int, version_tag: str) -> dict[str, Any]:
     """Query Postgres for the dataset row matching (recipe_id, version_tag).
 
-    Reads `id`, `recipe_snapshot`, and `hf_repo_uri` from the `dataset` table.
-    The recipe_snapshot was frozen at INSERT time by F-042 (hard invariant #1).
-    This function does NOT re-freeze the recipe — it uses the already-frozen snapshot.
+    Reads `id`, `recipe_snapshot`, `hf_repo_uri`, and `dataset_card_md` from the
+    `dataset` table. The recipe_snapshot was frozen at INSERT time by F-042
+    (hard invariant #1). This function does NOT re-freeze the recipe — it uses the
+    already-frozen snapshot.
 
     Args:
         recipe_id:   The recipe ID from the partition key.
         version_tag: The version tag string (e.g. "v1").
 
     Returns:
-        Dict with keys: "id" (int), "recipe_snapshot" (dict), "hf_repo_uri" (str).
+        Dict with keys: "id" (int), "recipe_snapshot" (dict), "hf_repo_uri" (str),
+        "dataset_card_md" (str | None).
 
     Raises:
         ValueError: If no matching dataset row is found (indicates F-042 step did not
@@ -127,7 +134,7 @@ def fetch_dataset_row(recipe_id: int, version_tag: str) -> dict[str, Any]:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, recipe_snapshot, hf_repo_uri "
+                "SELECT id, recipe_snapshot, hf_repo_uri, dataset_card_md "
                 "FROM dataset "
                 "WHERE recipe_id = %s AND version_tag = %s",
                 (recipe_id, version_tag),
@@ -148,7 +155,62 @@ def fetch_dataset_row(recipe_id: int, version_tag: str) -> dict[str, Any]:
     # recipe_snapshot is a JSONB column; psycopg2 returns it as a dict already.
     recipe_snapshot: dict[str, Any] = row[1]
     hf_repo_uri: str = row[2]
-    return {"id": dataset_id, "recipe_snapshot": recipe_snapshot, "hf_repo_uri": hf_repo_uri}
+    dataset_card_md: str | None = row[3]
+    return {
+        "id": dataset_id,
+        "recipe_snapshot": recipe_snapshot,
+        "hf_repo_uri": hf_repo_uri,
+        "dataset_card_md": dataset_card_md,
+    }
+
+
+def update_dataset_row(
+    dataset_id: int,
+    sample_count: int,
+    size_bytes: int,
+) -> None:
+    """UPDATE dataset SET status='done', sample_count, size_bytes, materialized_at=NOW()
+    WHERE id = dataset_id AND status = 'pending'.
+
+    The AND status = 'pending' predicate makes this a true no-op (0-row UPDATE,
+    no error) when the row is already 'done', preserving the original materialized_at
+    timestamp on any idempotent re-run.
+
+    NOTE: 'stats' (JSONB heavy-stats column) is NOT updated here; it remains NULL
+    after F-044. Population of stats is deferred to a later sprint.
+
+    Uses psycopg2 (sync), same pattern as fetch_dataset_row().
+    PLATFORM_DB_URL from os.environ.
+
+    Args:
+        dataset_id:   Primary key of the dataset row to update.
+        sample_count: Total number of synthesised rows (train + val).
+        size_bytes:   Sum of train + val Parquet buffer sizes (in-memory bytes).
+
+    Raises:
+        psycopg2.Error: on any DB failure (caller — HFDatasetIOManager — logs the
+                        error before re-raising, leaving MinIO uploads intact but the
+                        row at status='pending'. See F-044 failure semantics §3.6.
+    """
+    db_url = os.environ["PLATFORM_DB_URL"]
+    conn = psycopg2.connect(db_url)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE dataset
+                SET status = 'done',
+                    sample_count = %s,
+                    size_bytes = %s,
+                    materialized_at = NOW()
+                WHERE id = %s
+                  AND status = 'pending'
+                """,
+                (sample_count, size_bytes, dataset_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -162,11 +224,11 @@ def _build_lance_storage_options() -> dict[str, str]:
     Reads MINIO_* from os.environ (same pattern as quality_tagger.py).
     """
     return {
-        "aws_access_key_id":     os.environ["MINIO_ROOT_USER"],
+        "aws_access_key_id": os.environ["MINIO_ROOT_USER"],
         "aws_secret_access_key": os.environ["MINIO_ROOT_PASSWORD"],
-        "endpoint":              f"http://{os.environ['MINIO_ENDPOINT']}",
-        "aws_region":            "us-east-1",
-        "allow_http":            "true",
+        "endpoint": f"http://{os.environ['MINIO_ENDPOINT']}",
+        "aws_region": "us-east-1",
+        "allow_http": "true",
     }
 
 
@@ -279,7 +341,7 @@ def call_llm_gateway(
             return None
         raise ValueError(
             f"call_llm_gateway: failed to parse LLM response as JSON "
-            f"{{\"instruction\": ..., \"output\": ...}}: {exc}"
+            f'{{"instruction": ..., "output": ...}}: {exc}'
         ) from exc
 
 
@@ -352,9 +414,12 @@ def _run_dataset_asset(
     db_row = fetch_dataset_row(recipe_id, version_tag)
     dataset_id: int = db_row["id"]
     recipe_snapshot: dict[str, Any] = db_row["recipe_snapshot"]
+    dataset_card_md: str | None = db_row["dataset_card_md"]
 
     filter_sql: str | None = recipe_snapshot.get("filter", {}).get("where")
-    template_config: dict[str, Any] = recipe_snapshot.get("schema", {}).get("config", {})
+    template_config: dict[str, Any] = recipe_snapshot.get("schema", {}).get(
+        "config", {}
+    )
     prompt_template: str = template_config.get(
         "prompt_template",
         (
@@ -364,9 +429,7 @@ def _run_dataset_asset(
         ),
     )
     val_ratio: float = (
-        recipe_snapshot.get("output", {})
-        .get("splits", {})
-        .get("validation", 0.1)
+        recipe_snapshot.get("output", {}).get("splits", {}).get("validation", 0.1)
     )
     fallback_on_failure: bool = template_config.get("fallback_on_failure", True)
     max_tokens: int = template_config.get("max_tokens", 512)
@@ -406,4 +469,5 @@ def _run_dataset_asset(
         recipe_snapshot=recipe_snapshot,
         dataset_id=dataset_id,
         version_tag=version_tag,
+        dataset_card_md=dataset_card_md,
     )

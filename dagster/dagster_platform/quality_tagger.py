@@ -63,11 +63,11 @@ def _build_lance_storage_options() -> dict[str, str]:
     Reads MINIO_* from os.environ (same pattern as chunker.py).
     """
     return {
-        "aws_access_key_id":     os.environ["MINIO_ROOT_USER"],
+        "aws_access_key_id": os.environ["MINIO_ROOT_USER"],
         "aws_secret_access_key": os.environ["MINIO_ROOT_PASSWORD"],
-        "endpoint":              f"http://{os.environ['MINIO_ENDPOINT']}",
-        "aws_region":            "us-east-1",
-        "allow_http":            "true",
+        "endpoint": f"http://{os.environ['MINIO_ENDPOINT']}",
+        "aws_region": "us-east-1",
+        "allow_http": "true",
     }
 
 
@@ -117,14 +117,10 @@ def score_chunks_via_gateway(texts: list[str]) -> list[tuple[float, str]]:
             provider: str = data["model"]
             results.append((score, provider))
         except requests.RequestException as exc:
-            logger.warning(
-                "score_chunks_via_gateway: HTTP request failed: %s", exc
-            )
+            logger.warning("score_chunks_via_gateway: HTTP request failed: %s", exc)
             results.append((0.0, "error"))
         except (ValueError, KeyError, TypeError) as exc:
-            logger.warning(
-                "score_chunks_via_gateway: response parse failed: %s", exc
-            )
+            logger.warning("score_chunks_via_gateway: response parse failed: %s", exc)
             results.append((0.0, "error"))
 
     return results
@@ -157,16 +153,9 @@ def compute_quality_scores(source_id: int) -> list[dict]:
     table = db.open_table("chunks")
 
     where_clause = f"source_id = {source_id} AND producer_asset = 'chunks'"
-    rows = (
-        table.search()
-        .where(where_clause)
-        .select(["chunk_id", "text"])
-        .to_list()
-    )
+    rows = table.search().where(where_clause).select(["chunk_id", "text"]).to_list()
     if not rows:
-        logger.info(
-            "compute_quality_scores: no rows found for source_id=%d", source_id
-        )
+        logger.info("compute_quality_scores: no rows found for source_id=%d", source_id)
         return []
 
     scored = score_chunks_via_gateway([r["text"] for r in rows])
@@ -257,16 +246,9 @@ def _llm_update(
         source_id:    The source being processed (used only in log messages).
         where_clause: SQL WHERE clause identifying rows to update.
     """
-    rows = (
-        table.search()
-        .where(where_clause)
-        .select(["chunk_id", "text"])
-        .to_list()
-    )
+    rows = table.search().where(where_clause).select(["chunk_id", "text"]).to_list()
     if not rows:
-        logger.info(
-            "_llm_update: no rows found for source_id=%d — skipping", source_id
-        )
+        logger.info("_llm_update: no rows found for source_id=%d — skipping", source_id)
         return
 
     scored = score_chunks_via_gateway([r["text"] for r in rows])

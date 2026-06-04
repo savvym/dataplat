@@ -54,11 +54,11 @@ def _build_lance_storage_options() -> dict[str, str]:
     Reads MINIO_* from os.environ (same pattern as lang_tagger.py).
     """
     return {
-        "aws_access_key_id":     os.environ["MINIO_ROOT_USER"],
+        "aws_access_key_id": os.environ["MINIO_ROOT_USER"],
         "aws_secret_access_key": os.environ["MINIO_ROOT_PASSWORD"],
-        "endpoint":              f"http://{os.environ['MINIO_ENDPOINT']}",
-        "aws_region":            "us-east-1",
-        "allow_http":            "true",
+        "endpoint": f"http://{os.environ['MINIO_ENDPOINT']}",
+        "aws_region": "us-east-1",
+        "allow_http": "true",
     }
 
 
@@ -146,9 +146,7 @@ def _find(parent: dict[str, str], x: str) -> str:
     return root
 
 
-def _union(
-    parent: dict[str, str], rank: dict[str, int], a: str, b: str
-) -> None:
+def _union(parent: dict[str, str], rank: dict[str, int], a: str, b: str) -> None:
     """Union by rank."""
     ra, rb = _find(parent, a), _find(parent, b)
     if ra == rb:
@@ -286,16 +284,9 @@ def compute_minhash_scores(source_id: int) -> list[dict]:
     table = db.open_table("chunks")
 
     where_clause = f"source_id = {source_id} AND producer_asset = 'chunks'"
-    rows = (
-        table.search()
-        .where(where_clause)
-        .select(["chunk_id", "text"])
-        .to_list()
-    )
+    rows = table.search().where(where_clause).select(["chunk_id", "text"]).to_list()
     if not rows:
-        logger.info(
-            "compute_minhash_scores: no rows found for source_id=%d", source_id
-        )
+        logger.info("compute_minhash_scores: no rows found for source_id=%d", source_id)
         return []
 
     # Sort by chunk_id ascending for canonical, deterministic cluster labels.
@@ -390,12 +381,7 @@ def _minhash_update(
         source_id:    The source being processed (used only in log messages).
         where_clause: SQL WHERE clause identifying rows to update.
     """
-    rows = (
-        table.search()
-        .where(where_clause)
-        .select(["chunk_id", "text"])
-        .to_list()
-    )
+    rows = table.search().where(where_clause).select(["chunk_id", "text"]).to_list()
     if not rows:
         logger.info(
             "_minhash_update: no rows found for source_id=%d — skipping",
@@ -413,8 +399,8 @@ def _minhash_update(
         table.update(
             where=f"chunk_id = '{chunk_id}'",
             values={
-                "attr_minhash_signature":  row["attr_minhash_signature"],
+                "attr_minhash_signature": row["attr_minhash_signature"],
                 "attr_minhash_cluster_id": row["attr_minhash_cluster_id"],
-                "attr_minhash_is_head":    row["attr_minhash_is_head"],
+                "attr_minhash_is_head": row["attr_minhash_is_head"],
             },
         )
