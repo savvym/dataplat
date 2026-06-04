@@ -27,6 +27,10 @@
 #        attr_minhash) now return list[dict] and route through LanceChunksIOManager
 #        column mode (D3a partial merge_insert). compute_*_scores() functions handle
 #        read-only scoring; IOManager owns the Lance write.
+# F-043: dataset — real asset body: reads Lance chunks filtered by recipe_snapshot,
+#        calls LLM gateway to synthesise Q+A pairs (sft_synthesis_qa), writes train/
+#        val Parquet splits + recipe.json + README.md to MinIO via HFDatasetIOManager.
+#        Replaces the F-042 no-op stub. io_manager_key="hf_dataset_io" added.
 
 from typing import Any
 
@@ -43,6 +47,15 @@ from dagster import (
 )
 
 from dagster_platform.lance_io_manager import LanceChunksIOManager
+from dagster_platform.hf_dataset_io_manager import HFDatasetIOManager
+from dagster_platform.sft_synthesis_qa import (
+    DatasetOutput,
+    call_llm_gateway,
+    deterministic_split,
+    fetch_dataset_row,
+    parse_dataset_partition_key,
+    read_chunks_from_lance,
+)
 
 from dagster_platform.extractor import (
     build_docling_document,
@@ -380,25 +393,139 @@ def attr_minhash(context: AssetExecutionContext) -> list[dict[str, Any]]:
     return rows
 
 
-# F-042: Dataset materializer stub.
+# F-043: Dataset materializer (replaces F-042 stub).
 # Partition key format: "ds_{recipe_id}_v{n}" (design doc §5.3, line 532).
-# F-043 replaces the body and adds io_manager_key="hf_dataset_io" to the decorator
-# and HFDatasetIOManager to Definitions(resources={}). The partitions_def and asset
-# key "dataset" are FROZEN and must not change between sprints.
+# io_manager_key="hf_dataset_io" added per agreed.md §6 "ADDABLE" carve-out.
+# The partitions_def and asset key "dataset" are FROZEN (per F-042 agreed.md §6).
 @asset(
     partitions_def=dataset_versions,
+    io_manager_key="hf_dataset_io",
     description=(
-        "Dataset materializer stub (F-042). Partition key: ds_{recipe_id}_v{n}. "
-        "Real body implemented in F-043 (sft_synthesis_qa materializer). "
-        "This stub returns a no-op MaterializeResult so that launchPartitionBackfill "
-        "can resolve the asset without error during F-042 integration testing."
+        "Dataset materializer (F-043 sft_synthesis_qa): reads matching chunks "
+        "from Lance using the recipe's filter predicate, calls the internal LLM "
+        "gateway to synthesise Q+A pairs, performs a deterministic train/val split, "
+        "and returns a DatasetOutput for HFDatasetIOManager to write train/val Parquet "
+        "+ recipe.json + README.md to s3://datasets/{dataset_id}_{version_tag}/."
     ),
 )
-def dataset(context: AssetExecutionContext) -> MaterializeResult:
-    """Stub dataset asset (F-042). Body replaced by F-043."""
+def dataset(context: AssetExecutionContext) -> DatasetOutput:
+    """Real dataset materializer asset (F-043 sft_synthesis_qa).
+
+    Steps (agreed.md §"Algorithm sketch"):
+      1. Parse recipe_id + version_tag from partition key.
+      2. Query Postgres for the dataset row (recipe_snapshot, dataset_id).
+      3. Extract config from recipe_snapshot (filter, prompt_template, val_ratio,
+         fallback_on_failure, max_tokens).
+      4. Read chunks from Lance (optionally filtered by filter_sql).
+      5. For each chunk: call LLM gateway to synthesise Q+A pair.
+      6. Deterministic split of qa_rows into train/val buckets.
+      7. Record asset-level metadata.
+      8. Return DatasetOutput — HFDatasetIOManager handles MinIO writes.
+    """
     partition_key = context.partition_key
-    context.log.info("dataset stub: partition_key=%s — no-op (F-042 stub)", partition_key)
-    return MaterializeResult(metadata={})
+    recipe_id, version_tag = parse_dataset_partition_key(partition_key)
+    context.log.info(
+        "dataset: starting for partition_key=%s recipe_id=%d version_tag=%s",
+        partition_key,
+        recipe_id,
+        version_tag,
+    )
+
+    db_row = fetch_dataset_row(recipe_id, version_tag)
+    dataset_id: int = db_row["id"]
+    recipe_snapshot: dict[str, Any] = db_row["recipe_snapshot"]
+    context.log.info(
+        "dataset: resolved dataset_id=%d hf_repo_uri=%s",
+        dataset_id,
+        db_row["hf_repo_uri"],
+    )
+
+    # Extract config from frozen recipe_snapshot.
+    filter_sql: str | None = recipe_snapshot.get("filter", {}).get("where")
+    template_config: dict[str, Any] = recipe_snapshot.get("schema", {}).get("config", {})
+    prompt_template: str = template_config.get(
+        "prompt_template",
+        (
+            "Generate a question and answer for the following text:\n\n"
+            "{chunk_text}\n\n"
+            'Respond with JSON: {{"instruction": "...", "output": "..."}}'
+        ),
+    )
+    val_ratio: float = (
+        recipe_snapshot.get("output", {})
+        .get("splits", {})
+        .get("validation", 0.1)
+    )
+    fallback_on_failure: bool = template_config.get("fallback_on_failure", True)
+    max_tokens: int = template_config.get("max_tokens", 512)
+
+    context.log.info(
+        "dataset: config — filter_sql=%r val_ratio=%.2f max_tokens=%d "
+        "fallback_on_failure=%s",
+        filter_sql,
+        val_ratio,
+        max_tokens,
+        fallback_on_failure,
+    )
+
+    chunks = read_chunks_from_lance(filter_sql)
+    context.log.info("dataset: read %d chunk(s) from Lance", len(chunks))
+
+    if not chunks:
+        context.log.warning(
+            "dataset: zero chunks found (recipe_id=%d version_tag=%s filter_sql=%r) "
+            "— materializing empty dataset",
+            recipe_id,
+            version_tag,
+            filter_sql,
+        )
+
+    qa_rows: list[dict[str, Any]] = []
+    for chunk in chunks:
+        prompt = prompt_template.format(chunk_text=chunk["text"])
+        raw = call_llm_gateway(
+            prompt,
+            max_tokens=max_tokens,
+            fallback_on_failure=fallback_on_failure,
+        )
+        if raw is not None:
+            qa_rows.append(
+                {
+                    "instruction": raw["instruction"],
+                    "output": raw["output"],
+                    "chunk_id": chunk["chunk_id"],
+                }
+            )
+
+    skipped = len(chunks) - len(qa_rows)
+    context.log.info(
+        "dataset: synthesised %d Q+A pair(s), skipped %d chunk(s)",
+        len(qa_rows),
+        skipped,
+    )
+
+    train_rows, val_rows = deterministic_split(qa_rows, val_ratio)
+    context.log.info(
+        "dataset: split — train=%d val=%d", len(train_rows), len(val_rows)
+    )
+
+    context.add_output_metadata(
+        {
+            "dataset_id": MetadataValue.int(dataset_id),
+            "train_count": MetadataValue.int(len(train_rows)),
+            "val_count": MetadataValue.int(len(val_rows)),
+            "chunks_processed": MetadataValue.int(len(chunks)),
+            "chunks_skipped": MetadataValue.int(skipped),
+        }
+    )
+
+    return DatasetOutput(
+        train_rows=train_rows,
+        val_rows=val_rows,
+        recipe_snapshot=recipe_snapshot,
+        dataset_id=dataset_id,
+        version_tag=version_tag,
+    )
 
 
 @op
@@ -422,5 +549,8 @@ def hello_world_job() -> None:
 defs = Definitions(
     jobs=[hello_world_job],
     assets=[source_asset, extract_mineru, chunks, attr_quality, attr_lang, attr_minhash, dataset],
-    resources={"lance_chunks_io": LanceChunksIOManager()},
+    resources={
+        "lance_chunks_io": LanceChunksIOManager(),
+        "hf_dataset_io": HFDatasetIOManager(),
+    },
 )
