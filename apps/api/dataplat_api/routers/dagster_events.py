@@ -19,9 +19,10 @@ Security checks (order is load-bearing per agreed.md §5):
 
 from __future__ import annotations
 
+import logging
 import secrets
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,12 +31,15 @@ from dataplat_api.db.models import Run
 from dataplat_api.db.session import get_session
 from dataplat_api.schemas.dagster_events import DagsterEventResponse, DagsterRunEventPayload
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/dagster", tags=["dagster"])
 
 
 @router.post("/events", response_model=DagsterEventResponse)
 async def post_dagster_event(
     body: DagsterRunEventPayload,
+    request: Request,
     x_dagster_webhook_secret: str | None = Header(default=None),
     session: AsyncSession = Depends(get_session),
 ) -> DagsterEventResponse:
@@ -83,6 +87,9 @@ async def post_dagster_event(
         return DagsterEventResponse(processed=False, reason="unknown_run")
 
     # ── Check 5: apply state transition (agreed.md §3.3) ─────────────────────
+    # Capture prev_status BEFORE mutation so the broker event has the `from` field.
+    prev_status: str | None = run.status
+
     if body.event_type == "RUN_START":
         run.status = "running"
         run.started_at = body.timestamp  # type: ignore[assignment]
@@ -96,5 +103,22 @@ async def post_dagster_event(
     # ── Check 6: persist ──────────────────────────────────────────────────────
     await session.commit()
 
-    # ── Check 7: respond ──────────────────────────────────────────────────────
+    # ── Check 7: fan-out to WS subscribers (best-effort, §4.5) ───────────────
+    # Only publish if status actually changed; broker.publish is sync.
+    if prev_status != run.status:
+        event: dict = {
+            "type": "run.status_changed",
+            "run_id": run.id,
+            "kind": run.kind,
+            "from": prev_status,
+            "to": run.status,
+            "metadata": {},
+        }
+        try:
+            request.app.state.run_broker.publish(run_id=run.id, event=event)
+        except Exception as exc:
+            # Never break HTTP 200 due to broker errors — best-effort delivery.
+            logger.warning("broker.publish failed for run %s: %s", run.id, exc)
+
+    # ── Check 8: respond ──────────────────────────────────────────────────────
     return DagsterEventResponse(processed=True)

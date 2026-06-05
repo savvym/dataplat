@@ -13,6 +13,7 @@ from sqlalchemy import text
 from dataplat_api.config import settings
 from dataplat_api.dagster.gateway import DagsterGateway
 from dataplat_api.db.session import engine
+from dataplat_api.realtime.broker import RunEventBroker
 from dataplat_api.routers.admin import router as admin_router
 from dataplat_api.routers.auth import router as auth_router
 from dataplat_api.routers.chunks import router as chunks_router
@@ -25,6 +26,7 @@ from dataplat_api.routers.dagster_events import router as dagster_events_router
 from dataplat_api.routers.datasets import router as datasets_router
 from dataplat_api.routers.recipes import router as recipes_router
 from dataplat_api.routers.sources import router as sources_router
+from dataplat_api.routers.ws_runs import router as ws_runs_router
 
 
 @asynccontextmanager
@@ -42,6 +44,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await conn.execute(text("SELECT 1"))
     gateway = DagsterGateway(graphql_url=settings.DAGSTER_GRAPHQL_URL)
     app.state.dagster_gateway = gateway
+    # F-051: in-process run-status event broker (single-worker MVP).
+    app.state.run_broker = RunEventBroker()
     yield
     await gateway.aclose()
 
@@ -63,3 +67,5 @@ app.include_router(datasets_router)
 app.include_router(dagster_events_router)
 # F-028: Internal LLM gateway — excluded from public OpenAPI spec (include_in_schema=False on router).
 app.include_router(llm_router)
+# F-051: WebSocket run-status subscription endpoint.
+app.include_router(ws_runs_router)
