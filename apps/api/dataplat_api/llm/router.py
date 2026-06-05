@@ -1,5 +1,7 @@
 # dataplat_api/llm/router.py
 # F-028: Internal LLM completions endpoint.
+# F-053: Error mapping (LLMAuthenticationError→502, LLMRateLimitError→429,
+#         LLMError→502) and extended LLMCompletionResponse with token/cost fields.
 #
 # POST /api/internal/llm/completions
 #
@@ -17,10 +19,16 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from dataplat_api.llm.gateway import LLMGateway, get_llm_gateway
+from dataplat_api.llm.gateway import (
+    LLMAuthenticationError,
+    LLMError,
+    LLMGateway,
+    LLMRateLimitError,
+    get_llm_gateway,
+)
 
 router = APIRouter(prefix="/api/internal/llm", include_in_schema=False)
 
@@ -37,6 +45,9 @@ class LLMCompletionResponse(BaseModel):
 
     content: str
     model: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    estimated_cost_usd: float = 0.0
 
 
 @router.post("/completions", response_model=LLMCompletionResponse)
@@ -51,6 +62,24 @@ async def completions(
 
     No authentication required — this endpoint is only reachable within the
     Docker network (Dagster → FastAPI inter-service call).
+
+    Error mapping (F-053):
+        LLMAuthenticationError → HTTP 502 (invalid API key)
+        LLMRateLimitError      → HTTP 429 (in-process rate limit exceeded)
+        LLMError               → HTTP 502 (upstream or generic LLM error)
     """
-    result = await gateway.complete(body.messages, body.max_tokens)
-    return LLMCompletionResponse(content=result.content, model=result.model)
+    try:
+        result = await gateway.complete(body.messages, body.max_tokens)
+    except LLMAuthenticationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except LLMRateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=f"LLM upstream error: {exc}")
+    return LLMCompletionResponse(
+        content=result.content,
+        model=result.model,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        estimated_cost_usd=result.estimated_cost_usd,
+    )

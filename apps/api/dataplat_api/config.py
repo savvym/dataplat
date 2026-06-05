@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     # that sends an empty X-Dagster-Webhook-Secret header (agreed.md §7 OQ-2 fix).
     DAGSTER_WEBHOOK_SECRET: str = ""
 
+    # Added S053-F-053: in-process per-minute rate limit for LLM gateway calls.
+    # Default 60 allows up to 60 LLM calls per 60-second sliding window.
+    # Override via env var LLM_RATE_LIMIT_PER_MINUTE for tighter/looser limits.
+    LLM_RATE_LIMIT_PER_MINUTE: int = 60
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
