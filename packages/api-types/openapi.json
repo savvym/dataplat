@@ -1507,7 +1507,7 @@
           "dagster"
         ],
         "summary": "Post Dagster Event",
-        "description": "Receive a Dagster run-status event and update the matching Run row.\n\nCalled by the fastapi_run_status_sensor in dagster_platform/definitions.py\nwhenever a Dagster run transitions to STARTED / SUCCESS / FAILURE / CANCELED.\n\nHTTP status codes:\n  200 \u2014 event processed (or silently ignored for unknown dagster_run_id)\n  401 \u2014 missing or invalid X-Dagster-Webhook-Secret header\n  422 \u2014 invalid payload (bad event_type, missing fields, etc.)\n  500 \u2014 DAGSTER_WEBHOOK_SECRET not configured on this server",
+        "description": "Receive a Dagster event and update state / publish notifications.\n\nCalled by:\n- fastapi_run_status_sensor: run lifecycle events (RUN_START/SUCCESS/etc.)\n- extract_mineru_notification_sensor: asset.materialized for extract_mineru\n- chunks_notification_sensor: chunks.added with chunk_count from metadata\n\nHTTP status codes:\n  200 \u2014 event processed (or silently ignored for unknown dagster_run_id)\n  401 \u2014 missing or invalid X-Dagster-Webhook-Secret header\n  422 \u2014 invalid payload (bad event_type, missing fields, etc.)\n  500 \u2014 DAGSTER_WEBHOOK_SECRET not configured on this server",
         "operationId": "post_dagster_event_api_dagster_events_post",
         "parameters": [
           {
@@ -2282,7 +2282,7 @@
           "processed"
         ],
         "title": "DagsterEventResponse",
-        "description": "Response body returned for every POST /api/dagster/events call.\n\nprocessed=True  \u2192 the matching Run row was found and updated.\nprocessed=False \u2192 no matching Run row (reason=\"unknown_run\"); the sensor\n                  should treat this as a success (no retry needed)."
+        "description": "Response body returned for every POST /api/dagster/events call.\n\nprocessed=True  \u2192 the matching Run row was found and updated (run-status events)\n                  or the notification was routed (ASSET_MATERIALIZATION events).\nprocessed=False \u2192 no matching Run row (reason=\"unknown_run\"); the sensor\n                  should treat this as a success (no retry needed)."
       },
       "DagsterRunEventPayload": {
         "properties": {
@@ -2292,7 +2292,8 @@
               "RUN_START",
               "RUN_SUCCESS",
               "RUN_FAILURE",
-              "RUN_CANCELED"
+              "RUN_CANCELED",
+              "ASSET_MATERIALIZATION"
             ],
             "title": "Event Type"
           },
@@ -2304,6 +2305,34 @@
             "type": "string",
             "format": "date-time",
             "title": "Timestamp"
+          },
+          "asset_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Key"
+          },
+          "partition_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partition Key"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata",
+            "default": {}
           }
         },
         "type": "object",
@@ -2313,7 +2342,7 @@
           "timestamp"
         ],
         "title": "DagsterRunEventPayload",
-        "description": "Webhook event payload posted by the Dagster run_status_sensor.\n\nFields\n------\nevent_type:\n    One of the four lifecycle transitions the sensor can fire on.\n    FastAPI/Pydantic raises HTTP 422 automatically on any other value.\ndagster_run_id:\n    The Dagster backfill ID (stored in Run.dagster_run_id).  For backfill\n    runs this is context.dagster_run.tags[\"dagster/backfill\"]; for plain\n    runs it is context.dagster_run.run_id (which will produce processed=False\n    since no matching Run row exists).\ntimestamp:\n    Event time as reported by the sensor (UTC ISO-8601 string; Pydantic\n    parses it to a timezone-aware datetime).  Used to set Run.started_at\n    (RUN_START) or Run.ended_at (terminal events)."
+        "description": "Webhook event payload posted by the Dagster sensors.\n\nFields\n------\nevent_type:\n    One of the four run-lifecycle transitions or ASSET_MATERIALIZATION.\n    FastAPI/Pydantic raises HTTP 422 automatically on any other value.\ndagster_run_id:\n    The Dagster backfill ID (stored in Run.dagster_run_id).  For backfill\n    runs this is context.dagster_run.tags[\"dagster/backfill\"]; for plain\n    runs it is context.dagster_run.run_id (which will produce processed=False\n    since no matching Run row exists).\ntimestamp:\n    Event time as reported by the sensor (UTC ISO-8601 string; Pydantic\n    parses it to a timezone-aware datetime).  Used to set Run.started_at\n    (RUN_START) or Run.ended_at (terminal events).\nasset_key:\n    Populated for ASSET_MATERIALIZATION events only.  The Dagster asset key\n    string (e.g. \"extract_mineru\", \"chunks\").  None for run-status events.\npartition_key:\n    Populated for ASSET_MATERIALIZATION events.  The partition key string\n    (e.g. \"src_42\").  None for run-status events.\nmetadata:\n    Arbitrary metadata dict from asset materialization.  Used by the chunks\n    sensor to pass {\"chunk_count\": N} (real count from Dagster metadata).\n    Empty dict for run-status events and extract_mineru events."
       },
       "DagsterStatusResponse": {
         "properties": {

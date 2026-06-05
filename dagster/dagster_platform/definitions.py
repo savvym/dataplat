@@ -44,14 +44,19 @@ import requests
 
 from dagster import (
     AssetExecutionContext,
+    AssetKey,
     AssetSpec,
     Definitions,
     DagsterRunStatus,
     DynamicPartitionsDefinition,
+    EventLogEntry,
     MaterializeResult,
     MetadataValue,
     RunStatusSensorContext,
+    SensorEvaluationContext,
+    SkipReason,
     asset,
+    asset_sensor,
     job,
     op,
     run_status_sensor,
@@ -634,7 +639,153 @@ def fastapi_run_status_sensor(context: RunStatusSensorContext) -> None:
         # Sensor failure must not fail the run itself.
 
 
-defs = Definitions(
+# ── F-052: Asset notification sensors ────────────────────────────────────────
+# Two @asset_sensor instances — one for extract_mineru, one for chunks.
+# Each fires when the corresponding asset materializes and POSTs an
+# ASSET_MATERIALIZATION event to POST /api/dagster/events so the FastAPI
+# NotificationBroker can fan-out to connected WS clients.
+#
+# Why @asset_sensor and NOT extending fastapi_run_status_sensor (Path 1):
+#   - @run_status_sensor fires on run lifecycle, NOT on asset-level events.
+#   - It has no EventLogEntry argument and cannot read per-asset metadata.
+#   - chunk_count is only accessible via EventLogEntry.asset_materialization
+#     .metadata["chunk_count"].value — available ONLY in @asset_sensor callback.
+#   - Extending fastapi_run_status_sensor would produce count=0 for ALL chunks
+#     events (semantically useless). Two dedicated sensors is the correct path.
+#
+# Delivery semantics: best-effort (same as fastapi_run_status_sensor).
+# The sensors return SkipReason (no job to trigger — side-effect-only sensors).
+
+
+def _post_asset_notification(
+    context: SensorEvaluationContext,
+    asset_event: EventLogEntry,
+    asset_key_str: str,
+    chunk_count: int | None = None,
+) -> None:
+    """HTTP POST helper shared by both asset notification sensors.
+
+    Extracts the backfill ID from the run tags (same pattern as
+    fastapi_run_status_sensor M1 fix) and POSTs ASSET_MATERIALIZATION
+    to the FastAPI webhook.
+
+    Best-effort: on any HTTP failure, logs WARNING and returns normally.
+    The sensor cursor advances regardless — event is permanently dropped.
+    """
+    dagster_run = context.instance.get_run_by_id(asset_event.run_id)
+    if dagster_run is None:
+        context.log.warning(
+            "_post_asset_notification: no run found for run_id=%s; dropping",
+            asset_event.run_id,
+        )
+        return
+
+    # Same backfill-tag extraction as fastapi_run_status_sensor (M1 fix pattern).
+    dagster_run_id: str = (
+        dagster_run.tags.get("dagster/backfill") or asset_event.run_id
+    )
+
+    am = asset_event.asset_materialization
+    partition_key: str | None = am.partition if am else None
+
+    payload: dict = {
+        "event_type": "ASSET_MATERIALIZATION",
+        "dagster_run_id": dagster_run_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "asset_key": asset_key_str,
+        "partition_key": partition_key,
+        "metadata": {},
+    }
+    if chunk_count is not None:
+        payload["metadata"] = {"chunk_count": chunk_count}
+
+    try:
+        resp = requests.post(
+            _FASTAPI_WEBHOOK_URL,
+            json=payload,
+            headers={"X-Dagster-Webhook-Secret": _DAGSTER_WEBHOOK_SECRET},
+            timeout=5,
+        )
+        resp.raise_for_status()
+    except Exception as exc:
+        context.log.warning(
+            "_post_asset_notification: HTTP call failed for asset=%s (event dropped): %s",
+            asset_key_str,
+            exc,
+        )
+        # Do not raise — best-effort delivery, same semantics as fastapi_run_status_sensor.
+
+
+@asset_sensor(
+    asset_key=AssetKey(["extract_mineru"]),
+    name="extract_mineru_notification_sensor",
+    minimum_interval_seconds=5,
+)
+def extract_mineru_notification_sensor(
+    context: SensorEvaluationContext,
+    asset_event: EventLogEntry,
+) -> SkipReason:
+    """Notify FastAPI when extract_mineru materializes (F-052).
+
+    Fires after each extract_mineru materialization. POSTs ASSET_MATERIALIZATION
+    with asset_key="extract_mineru" and the partition_key to POST /api/dagster/events,
+    which routes an AssetMaterializedEvent to the connected WS client.
+
+    Returns SkipReason — no job is triggered; this is a side-effect-only sensor.
+    Delivery: best-effort (event dropped on HTTP failure; see _post_asset_notification).
+    """
+    _post_asset_notification(
+        context=context,
+        asset_event=asset_event,
+        asset_key_str="extract_mineru",
+        chunk_count=None,
+    )
+    return SkipReason("notification sent; no run to trigger")
+
+
+@asset_sensor(
+    asset_key=AssetKey(["chunks"]),
+    name="chunks_notification_sensor",
+    minimum_interval_seconds=5,
+)
+def chunks_notification_sensor(
+    context: SensorEvaluationContext,
+    asset_event: EventLogEntry,
+) -> SkipReason:
+    """Notify FastAPI when the chunks asset materializes (F-052).
+
+    Fires after each chunks materialization. Reads the real chunk_count from
+    Dagster asset materialization metadata:
+      asset_event.asset_materialization.metadata["chunk_count"].value
+
+    Falls back to 0 if the key is absent (defensive guard — normal code path
+    always has chunk_count set at definitions.py:236 via add_output_metadata).
+
+    POSTs ASSET_MATERIALIZATION with asset_key="chunks", partition_key, and
+    metadata={"chunk_count": N} to POST /api/dagster/events, which routes a
+    ChunksAddedEvent to the connected WS client.
+
+    Returns SkipReason — no job is triggered; this is a side-effect-only sensor.
+    Delivery: best-effort (event dropped on HTTP failure; see _post_asset_notification).
+    """
+    am = asset_event.asset_materialization
+    chunk_count: int = 0
+    if am is not None and "chunk_count" in am.metadata:
+        try:
+            chunk_count = int(am.metadata["chunk_count"].value)
+        except (ValueError, TypeError, AttributeError):
+            context.log.warning(
+                "chunks_notification_sensor: could not read chunk_count from metadata; "
+                "falling back to 0"
+            )
+
+    _post_asset_notification(
+        context=context,
+        asset_event=asset_event,
+        asset_key_str="chunks",
+        chunk_count=chunk_count,
+    )
+    return SkipReason("notification sent; no run to trigger")
     jobs=[hello_world_job],
     assets=[
         source_asset,
@@ -645,7 +796,11 @@ defs = Definitions(
         attr_minhash,
         dataset,
     ],
-    sensors=[fastapi_run_status_sensor],
+    sensors=[
+        fastapi_run_status_sensor,
+        extract_mineru_notification_sensor,
+        chunks_notification_sensor,
+    ],
     resources={
         "lance_chunks_io": LanceChunksIOManager(),
         "hf_dataset_io": HFDatasetIOManager(),
