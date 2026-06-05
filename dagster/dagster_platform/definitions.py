@@ -31,19 +31,30 @@
 #        calls LLM gateway to synthesise Q+A pairs (sft_synthesis_qa), writes train/
 #        val Parquet splits + recipe.json + README.md to MinIO via HFDatasetIOManager.
 #        Replaces the F-042 no-op stub. io_manager_key="hf_dataset_io" added.
+# F-050: fastapi_run_status_sensor — run-status sensor that fires on every Dagster
+#        run status change (STARTED/SUCCESS/FAILURE/CANCELED) and POSTs the event to
+#        POST /api/dagster/events on the FastAPI service. Uses the dagster/backfill
+#        tag (OQ-1 fix) to resolve the backfill ID stored in Run.dagster_run_id.
 
 from typing import Any
+import os
+from datetime import datetime, timezone
+
+import requests
 
 from dagster import (
     AssetExecutionContext,
     AssetSpec,
     Definitions,
+    DagsterRunStatus,
     DynamicPartitionsDefinition,
     MaterializeResult,
     MetadataValue,
+    RunStatusSensorContext,
     asset,
     job,
     op,
+    run_status_sensor,
 )
 
 from dagster_platform.lance_io_manager import LanceChunksIOManager
@@ -545,6 +556,84 @@ def hello_world_job() -> None:
     hello_op()
 
 
+# ── F-050: Run-status sensor ──────────────────────────────────────────────────
+# Environment variables (injected by docker-compose.dev.yml):
+#   FASTAPI_WEBHOOK_URL   — defaults to the compose-internal FastAPI address.
+#   DAGSTER_WEBHOOK_SECRET — shared secret validated by POST /api/dagster/events.
+_FASTAPI_WEBHOOK_URL: str = os.getenv(
+    "FASTAPI_WEBHOOK_URL", "http://fastapi:8000/api/dagster/events"
+)
+_DAGSTER_WEBHOOK_SECRET: str = os.getenv("DAGSTER_WEBHOOK_SECRET", "")
+
+_EVENT_TYPE_MAP: dict[DagsterRunStatus, str] = {
+    DagsterRunStatus.STARTED: "RUN_START",
+    DagsterRunStatus.SUCCESS: "RUN_SUCCESS",
+    DagsterRunStatus.FAILURE: "RUN_FAILURE",
+    DagsterRunStatus.CANCELED: "RUN_CANCELED",
+}
+
+
+@run_status_sensor(
+    run_status_list=[
+        DagsterRunStatus.STARTED,
+        DagsterRunStatus.SUCCESS,
+        DagsterRunStatus.FAILURE,
+        DagsterRunStatus.CANCELED,
+    ],
+    name="fastapi_run_status_sensor",
+    minimum_interval_seconds=5,
+)
+def fastapi_run_status_sensor(context: RunStatusSensorContext) -> None:
+    """Post run status events to the FastAPI webhook (F-050).
+
+    Fires for every Dagster run (all jobs + backfills). Unknown dagster_run_ids
+    are silently ignored by FastAPI (HTTP 200 processed=False).
+
+    Backfill-ID extraction (OQ-1 fix):
+      Run.dagster_run_id stores the Dagster backfill ID (from launchPartitionBackfill
+      → backfillId). A @run_status_sensor fires once per individual partition run,
+      each with its own UUID (context.dagster_run.run_id). The sensor reads
+      context.dagster_run.tags.get("dagster/backfill") — automatically stamped on
+      every partition run inside a backfill by Dagster 1.x — and uses that as the
+      dagster_run_id payload. For non-backfill runs (e.g. hello_world_job) the tag
+      is absent; run_id is used as the fallback and those runs correctly return
+      processed=False since they have no matching Run row.
+
+    Delivery semantics: best-effort, NOT at-least-once. The try/except swallows all
+    HTTP exceptions and returns normally so the Dagster daemon marks this tick SUCCESS
+    and advances its cursor. A failed HTTP call means the event is permanently dropped
+    — it will NOT be retried on the next tick. For at-least-once semantics, remove
+    the try/except and let exceptions propagate; the daemon will re-attempt the same
+    tick on the next poll interval. For MVP, best-effort delivery is acceptable
+    (agreed.md §11 out-of-scope).
+    """
+    event_type = _EVENT_TYPE_MAP[context.dagster_run.status]
+    # M1 fix: use the backfill tag when available so the lookup matches
+    # Run.dagster_run_id (which stores the backfill ID, not the partition-run UUID).
+    dagster_run_id: str = (
+        context.dagster_run.tags.get("dagster/backfill") or context.dagster_run.run_id
+    )
+    payload = {
+        "event_type": event_type,
+        "dagster_run_id": dagster_run_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        resp = requests.post(
+            _FASTAPI_WEBHOOK_URL,
+            json=payload,
+            headers={"X-Dagster-Webhook-Secret": _DAGSTER_WEBHOOK_SECRET},
+            timeout=5,
+        )
+        resp.raise_for_status()
+    except Exception as exc:
+        context.log.warning(
+            "fastapi_run_status_sensor: HTTP call failed (event dropped): %s", exc
+        )
+        # Do not raise — event is permanently dropped (best-effort; see docstring).
+        # Sensor failure must not fail the run itself.
+
+
 defs = Definitions(
     jobs=[hello_world_job],
     assets=[
@@ -556,6 +645,7 @@ defs = Definitions(
         attr_minhash,
         dataset,
     ],
+    sensors=[fastapi_run_status_sensor],
     resources={
         "lance_chunks_io": LanceChunksIOManager(),
         "hf_dataset_io": HFDatasetIOManager(),

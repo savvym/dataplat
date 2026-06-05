@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     # Deferred from F-043 (contracts/S043-F-043/agreed.md §Out of Scope item 4).
     MINIO_DATASETS_BUCKET: str = "datasets"
 
+    # Added S050-F-050: shared secret for the Dagster run-status webhook.
+    # Default "" allows CI unit tests to run without the env var; production MUST
+    # set a non-empty value.  The POST /api/dagster/events handler checks for an
+    # empty value and returns HTTP 500 (fail-closed) rather than accepting any caller
+    # that sends an empty X-Dagster-Webhook-Secret header (agreed.md §7 OQ-2 fix).
+    DAGSTER_WEBHOOK_SECRET: str = ""
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
