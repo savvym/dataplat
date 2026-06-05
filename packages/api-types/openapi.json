@@ -89,15 +89,20 @@
         "summary": "Trigger asset backfill (extract_mineru or chunks)",
         "description": "Launch a Dagster asset backfill for extract_mineru or chunks over the given source IDs. Returns the Dagster backfillId and the Postgres run.id. Returns 404 if any source_id does not exist. Returns 503 if Dagster is unreachable or the backfill launch fails. Requires a valid Bearer JWT (F-008).",
         "operationId": "trigger_extract_run_api_runs_post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/RunCreate"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "202": {
@@ -120,12 +125,66 @@
               }
             }
           }
-        },
+        }
+      },
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "List runs owned by the authenticated caller",
+        "description": "Return all Run rows owned by the authenticated caller (Run.triggered_by == current_user.id), ordered started_at DESC NULLS LAST then id DESC. Optional ?status= query parameter filters by run status (one of: pending, running, success, failure); invalid values produce 422 before any SQL is executed. Returns {items, total} envelope. Requires a valid Bearer JWT (F-008).",
+        "operationId": "list_runs_api_runs_get",
         "security": [
           {
             "OAuth2PasswordBearer": []
           }
-        ]
+        ],
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "pending",
+                    "running",
+                    "success",
+                    "failure"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/runs/{id}": {
@@ -3290,6 +3349,131 @@
         ],
         "title": "RunDetailResponse",
         "description": "Full run record for GET /api/runs/{id} (F-048).\n\nExposes all 14 ORM-mapped columns of the ``run`` table.\n``dagster_run_id`` is the Dagster backfill UUID (TEXT UNIQUE NOT NULL).\n``kind`` is the run type string set by the trigger handler.\n``config`` is a nullable JSONB dict; currently None for all trigger paths.\n``started_at`` / ``ended_at`` are nullable datetimes (None until state\ntransitions fire in Dagster sensor callbacks, if any).\n``triggered_by`` is the owner FK; doubles as the owner-scope filter.\n``trigger_context`` is nullable JSONB; currently None for all trigger paths.\n``asset_keys`` / ``partition_keys`` are Postgres ARRAY(Text) columns."
+      },
+      "RunListItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "dagster_run_id": {
+            "type": "string",
+            "title": "Dagster Run Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "triggered_by": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Triggered By"
+          },
+          "dataset_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Id"
+          },
+          "recipe_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recipe Id"
+          },
+          "source_collection_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Collection Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "dagster_run_id",
+          "kind",
+          "status",
+          "started_at",
+          "ended_at",
+          "triggered_by",
+          "dataset_id",
+          "recipe_id",
+          "source_collection_id"
+        ],
+        "title": "RunListItem",
+        "description": "Slim run record for GET /api/runs list endpoint (F-049).\n\nExposes 10 of the 14 ORM-mapped columns \u2014 enough to render a run list and\nnavigate to detail.  The 4 excluded columns (``asset_keys``,\n``partition_keys``, ``config``, ``trigger_context``) are ARRAY or JSONB\nblobs that are bulky and detail-level only; they are available via\n``GET /api/runs/{id}`` (RunDetailResponse).\n\nFields:\n    id:                   BigInteger PK \u2014 required for item-level navigation.\n    dagster_run_id:       TEXT UNIQUE NOT NULL \u2014 used to poll\n                          GET /dagster/{dagster_run_id} for live status.\n    kind:                 TEXT NOT NULL \u2014 e.g. \"extract\", \"chunk\",\n                          \"attr_quality\", \"attr_lang\", \"attr_minhash\".\n    status:               TEXT NOT NULL \u2014 e.g. \"pending\", \"running\",\n                          \"success\", \"failure\".\n    started_at:           Null for ``status='pending'`` rows (set by\n                          Dagster sensor on run start).\n    ended_at:             Null until run completes.\n    triggered_by:         FK \u2192 users.id; the owner; nullable per ORM but\n                          always populated for application-created rows.\n    dataset_id:           FK \u2192 dataset.id; null for most run types.\n    recipe_id:            FK \u2192 recipe.id; null for extract/attr runs.\n    source_collection_id: FK \u2192 source_collection.id; null unless run\n                          was triggered over a collection."
+      },
+      "RunListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunListItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "RunListResponse",
+        "description": "Paginated envelope for GET /api/runs (F-049).\n\nFields:\n    items: Ordered ``started_at DESC NULLS LAST, id DESC`` list of\n           RunListItem records owned by the authenticated caller.\n    total: Owner-scoped COUNT (and optionally status-filtered).\n           Equals ``len(items)`` for unpaginated MVP; included for\n           forward-compatibility when ``limit``/``offset`` are added."
       },
       "RunStatusResponse": {
         "properties": {

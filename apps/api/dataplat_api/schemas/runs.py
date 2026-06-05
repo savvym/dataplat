@@ -1,9 +1,10 @@
-"""Pydantic response schemas for the runs API surface — S005-F-005, S018-F-018, S048-F-048.
+"""Pydantic response schemas for the runs API surface — S005-F-005, S018-F-018, S048-F-048, S049-F-049.
 
 These schemas define the JSON shape of responses from:
   - POST /api/admin/runs/hello-world       → LaunchHelloWorldResponse
   - GET  /api/runs/dagster/{dagster_run_id} → RunStatusResponse
   - POST /api/runs                         → RunCreate (request), RunCreateResponse (response)
+  - GET  /api/runs                         → RunListResponse (list of RunListItem)
   - GET  /api/runs/{id}                    → RunDetailResponse
 
 The `status` field in RunStatusResponse uses a three-value Literal that maps
@@ -121,3 +122,60 @@ class RunDetailResponse(BaseModel):
     ended_at: datetime | None  # Run.ended_at        DateTime tz nullable
     triggered_by: int | None  # Run.triggered_by    FK → users.id nullable
     trigger_context: dict | None  # Run.trigger_context JSONB nullable
+
+
+class RunListItem(BaseModel):
+    """Slim run record for GET /api/runs list endpoint (F-049).
+
+    Exposes 10 of the 14 ORM-mapped columns — enough to render a run list and
+    navigate to detail.  The 4 excluded columns (``asset_keys``,
+    ``partition_keys``, ``config``, ``trigger_context``) are ARRAY or JSONB
+    blobs that are bulky and detail-level only; they are available via
+    ``GET /api/runs/{id}`` (RunDetailResponse).
+
+    Fields:
+        id:                   BigInteger PK — required for item-level navigation.
+        dagster_run_id:       TEXT UNIQUE NOT NULL — used to poll
+                              GET /dagster/{dagster_run_id} for live status.
+        kind:                 TEXT NOT NULL — e.g. "extract", "chunk",
+                              "attr_quality", "attr_lang", "attr_minhash".
+        status:               TEXT NOT NULL — e.g. "pending", "running",
+                              "success", "failure".
+        started_at:           Null for ``status='pending'`` rows (set by
+                              Dagster sensor on run start).
+        ended_at:             Null until run completes.
+        triggered_by:         FK → users.id; the owner; nullable per ORM but
+                              always populated for application-created rows.
+        dataset_id:           FK → dataset.id; null for most run types.
+        recipe_id:            FK → recipe.id; null for extract/attr runs.
+        source_collection_id: FK → source_collection.id; null unless run
+                              was triggered over a collection.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    dagster_run_id: str
+    kind: str
+    status: str
+    started_at: datetime | None
+    ended_at: datetime | None
+    triggered_by: int | None
+    dataset_id: int | None
+    recipe_id: int | None
+    source_collection_id: int | None
+
+
+class RunListResponse(BaseModel):
+    """Paginated envelope for GET /api/runs (F-049).
+
+    Fields:
+        items: Ordered ``started_at DESC NULLS LAST, id DESC`` list of
+               RunListItem records owned by the authenticated caller.
+        total: Owner-scoped COUNT (and optionally status-filtered).
+               Equals ``len(items)`` for unpaginated MVP; included for
+               forward-compatibility when ``limit``/``offset`` are added.
+    """
+
+    items: list[RunListItem]
+    total: int

@@ -1,4 +1,4 @@
-"""Runs router — S005-F-005, extended S008-F-008, extended S018-F-018, extended S048-F-048.
+"""Runs router — S005-F-005, extended S008-F-008, extended S018-F-018, extended S048-F-048, extended S049-F-049.
 
 Provides two API surfaces for Dagster run management:
 
@@ -8,21 +8,23 @@ Provides two API surfaces for Dagster run management:
 
   runs_router (prefix="/api/runs", tags=["runs"]):
     POST ""                          — trigger an asset backfill (extract_mineru, chunks, or attr_quality, HTTP 202 Accepted, F-018/F-024/F-027)
+    GET  ""                          — list all runs owned by caller, ordered started_at DESC NULLS LAST, id DESC (HTTP 200, F-049)
     GET  /{id}                       — return full Postgres run record (HTTP 200, F-048)
     GET  /dagster/{dagster_run_id}   — poll current status of a Dagster run (HTTP 200, F-005)
     Protected by JWT Bearer auth (F-008).
 
 Deferrals:
-  - GET /api/runs (list, paginated): F-049 (requires business run table from F-018).
   - GET /api/runs/{id}/logs proxy: beyond F-049.
   - WebSocket run-status events: F-051.
 """
 
 from __future__ import annotations
 
+from typing import Literal, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataplat_api.auth.dependencies import get_current_user
@@ -39,6 +41,8 @@ from dataplat_api.schemas.runs import (
     RunCreate,
     RunCreateResponse,
     RunDetailResponse,
+    RunListItem,
+    RunListResponse,
     RunStatusResponse,
 )
 
@@ -216,6 +220,59 @@ async def trigger_extract_run(
     await session.refresh(run)
 
     return RunCreateResponse(dagster_run_id=backfill_id, run_id=run.id)
+
+
+@runs_router.get(
+    "",
+    response_model=RunListResponse,
+    summary="List runs owned by the authenticated caller",
+    description=(
+        "Return all Run rows owned by the authenticated caller "
+        "(Run.triggered_by == current_user.id), ordered started_at DESC NULLS LAST "
+        "then id DESC. Optional ?status= query parameter filters by run status "
+        "(one of: pending, running, success, failure); "
+        "invalid values produce 422 before any SQL is executed. "
+        "Returns {items, total} envelope. "
+        "Requires a valid Bearer JWT (F-008)."
+    ),
+)
+async def list_runs(
+    status: Optional[Literal["pending", "running", "success", "failure"]] = None,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> RunListResponse:
+    """Return all runs owned by the authenticated caller (F-049).
+
+    Owner-scoped on Run.triggered_by == current_user.id.
+    Ordered started_at DESC NULLS LAST, id DESC (pending rows last).
+    Optional ?status= filter validated as Literal["pending","running","success","failure"];
+    FastAPI returns 422 on invalid values before this body runs.
+    Returns HTTP 200 with {items, total} always (empty list for no runs).
+    Requires a valid Bearer JWT (F-008).
+    """
+    # Query 1: fetch page rows (owner-scoped, optionally status-filtered, ordered)
+    stmt_page = (
+        select(Run)
+        .where(Run.triggered_by == current_user.id)
+        .order_by(Run.started_at.desc().nulls_last(), Run.id.desc())
+    )
+    if status is not None:
+        stmt_page = stmt_page.where(Run.status == status)
+    result = await session.execute(stmt_page)
+    rows = result.scalars().all()
+
+    # Query 2: count (same owner-scope + status filter, no ORDER BY)
+    stmt_count = select(func.count()).select_from(Run).where(
+        Run.triggered_by == current_user.id
+    )
+    if status is not None:
+        stmt_count = stmt_count.where(Run.status == status)
+    total = (await session.execute(stmt_count)).scalar_one()
+
+    return RunListResponse(
+        items=[RunListItem.model_validate(row) for row in rows],
+        total=total,
+    )
 
 
 @runs_router.get(
