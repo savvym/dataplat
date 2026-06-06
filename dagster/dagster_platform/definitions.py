@@ -578,23 +578,23 @@ _EVENT_TYPE_MAP: dict[DagsterRunStatus, str] = {
 }
 
 
-@run_status_sensor(
-    run_status_list=[
-        DagsterRunStatus.STARTED,
-        DagsterRunStatus.SUCCESS,
-        DagsterRunStatus.FAILURE,
-        DagsterRunStatus.CANCELED,
-    ],
-    name="fastapi_run_status_sensor",
-    minimum_interval_seconds=5,
-)
-def fastapi_run_status_sensor(context: RunStatusSensorContext) -> None:
-    """Post run status events to the FastAPI webhook (F-050).
+def _post_fastapi_run_status_event(context: RunStatusSensorContext) -> None:
+    """Shared body for the four status-specific @run_status_sensor instances (F-050).
 
-    Fires for every Dagster run (all jobs + backfills). Unknown dagster_run_ids
-    are silently ignored by FastAPI (HTTP 200 processed=False).
+    Builds the event payload from context.dagster_run.status (mapped via
+    _EVENT_TYPE_MAP) + a backfill-tag-aware dagster_run_id, then POSTs to the
+    FastAPI webhook with the shared secret header. Best-effort delivery — see
+    docstring on each sensor wrapper for retry semantics.
 
-    Backfill-ID extraction (OQ-1 fix):
+    Why this is split out: Dagster 1.11.16's @run_status_sensor takes a SINGULAR
+    `run_status=` parameter (one DagsterRunStatus per decorator instance). The
+    pre-1.0 plural form `run_status_list=[...]` does not exist in this version
+    and TypeErrors at import time, breaking the entire code location. To monitor
+    multiple statuses (STARTED + SUCCESS + FAILURE + CANCELED) we register four
+    sensors, each delegating to this single helper. Behaviour matches the
+    F-050 agreed.md contract: 4 webhook events per Run lifecycle.
+
+    Backfill-ID extraction (M1/OQ-1 from F-050 agreed.md):
       Run.dagster_run_id stores the Dagster backfill ID (from launchPartitionBackfill
       → backfillId). A @run_status_sensor fires once per individual partition run,
       each with its own UUID (context.dagster_run.run_id). The sensor reads
@@ -605,12 +605,9 @@ def fastapi_run_status_sensor(context: RunStatusSensorContext) -> None:
       processed=False since they have no matching Run row.
 
     Delivery semantics: best-effort, NOT at-least-once. The try/except swallows all
-    HTTP exceptions and returns normally so the Dagster daemon marks this tick SUCCESS
-    and advances its cursor. A failed HTTP call means the event is permanently dropped
-    — it will NOT be retried on the next tick. For at-least-once semantics, remove
-    the try/except and let exceptions propagate; the daemon will re-attempt the same
-    tick on the next poll interval. For MVP, best-effort delivery is acceptable
-    (agreed.md §11 out-of-scope).
+    HTTP exceptions so the Dagster daemon marks this tick SUCCESS and advances its
+    cursor. A failed HTTP call means the event is permanently dropped — it will NOT
+    be retried on the next tick.
     """
     event_type = _EVENT_TYPE_MAP[context.dagster_run.status]
     # M1 fix: use the backfill tag when available so the lookup matches
@@ -633,10 +630,50 @@ def fastapi_run_status_sensor(context: RunStatusSensorContext) -> None:
         resp.raise_for_status()
     except Exception as exc:
         context.log.warning(
-            "fastapi_run_status_sensor: HTTP call failed (event dropped): %s", exc
+            "fastapi_run_status_event: HTTP call failed (event dropped): %s", exc
         )
         # Do not raise — event is permanently dropped (best-effort; see docstring).
         # Sensor failure must not fail the run itself.
+
+
+@run_status_sensor(
+    run_status=DagsterRunStatus.STARTED,
+    name="fastapi_run_started_sensor",
+    minimum_interval_seconds=5,
+)
+def fastapi_run_started_sensor(context: RunStatusSensorContext) -> None:
+    """F-050 webhook on RUN_STARTED (one of four status sensors)."""
+    _post_fastapi_run_status_event(context)
+
+
+@run_status_sensor(
+    run_status=DagsterRunStatus.SUCCESS,
+    name="fastapi_run_success_sensor",
+    minimum_interval_seconds=5,
+)
+def fastapi_run_success_sensor(context: RunStatusSensorContext) -> None:
+    """F-050 webhook on RUN_SUCCESS (one of four status sensors)."""
+    _post_fastapi_run_status_event(context)
+
+
+@run_status_sensor(
+    run_status=DagsterRunStatus.FAILURE,
+    name="fastapi_run_failure_sensor",
+    minimum_interval_seconds=5,
+)
+def fastapi_run_failure_sensor(context: RunStatusSensorContext) -> None:
+    """F-050 webhook on RUN_FAILURE (one of four status sensors)."""
+    _post_fastapi_run_status_event(context)
+
+
+@run_status_sensor(
+    run_status=DagsterRunStatus.CANCELED,
+    name="fastapi_run_canceled_sensor",
+    minimum_interval_seconds=5,
+)
+def fastapi_run_canceled_sensor(context: RunStatusSensorContext) -> None:
+    """F-050 webhook on RUN_CANCELED (one of four status sensors)."""
+    _post_fastapi_run_status_event(context)
 
 
 # ── F-052: Asset notification sensors ────────────────────────────────────────
@@ -786,6 +823,9 @@ def chunks_notification_sensor(
         chunk_count=chunk_count,
     )
     return SkipReason("notification sent; no run to trigger")
+
+
+defs = Definitions(
     jobs=[hello_world_job],
     assets=[
         source_asset,
@@ -797,7 +837,10 @@ def chunks_notification_sensor(
         dataset,
     ],
     sensors=[
-        fastapi_run_status_sensor,
+        fastapi_run_started_sensor,
+        fastapi_run_success_sensor,
+        fastapi_run_failure_sensor,
+        fastapi_run_canceled_sensor,
         extract_mineru_notification_sensor,
         chunks_notification_sensor,
     ],

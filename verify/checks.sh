@@ -87,6 +87,30 @@ case "$LAYER" in
       | grep -q '"dagster_version"' \
       || { echo "FAIL: smoke C4 Dagster connectivity: /server_info did not return dagster_version"; exit 1; }
     echo "smoke C4 Dagster connectivity: OK"
+
+    echo "--- smoke: C5 Dagster code location loaded ---"
+    # C5 catches user-code import/syntax/decorator-misuse errors that /server_info
+    # cannot detect (the admin layer answers 200 even when the user-code repo fails
+    # to load). Probes GraphQL repositoriesOrError; expects ≥1 RepositoryNode.
+    # Added 2026-06-06 (S054-HF1) after F-050+F-052 silently broke the code repo
+    # for two days while smoke layer + apps/api unit tests remained green.
+    C5_PAYLOAD='{"query":"{repositoriesOrError {... on RepositoryConnection {nodes {name}} ... on PythonError {message}}}"}'
+    C5_RESP=$(curl -fsS -X POST "http://localhost:${DAGSTER_HOST_PORT}/graphql" \
+      -H 'content-type: application/json' --data "$C5_PAYLOAD") \
+      || { echo "FAIL: smoke C5 Dagster code location: GraphQL request failed"; exit 1; }
+    C5_NODES=$(printf '%s' "$C5_RESP" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+r = d.get("data", {}).get("repositoriesOrError", {})
+if "nodes" in r:
+    print(len(r["nodes"]))
+else:
+    sys.stderr.write("Dagster repo load error: " + r.get("message", "unknown") + "\n")
+    sys.exit(1)
+') || { echo "FAIL: smoke C5 Dagster code location: $C5_RESP"; exit 1; }
+    [[ "$C5_NODES" -ge 1 ]] \
+      || { echo "FAIL: smoke C5 Dagster code location: 0 repositories loaded (definitions.py may have a syntax/import error)"; exit 1; }
+    echo "smoke C5 Dagster code location: OK ($C5_NODES repository node(s) loaded)"
     ;;
   backend)
     exists apps/api || { echo "no apps/api yet"; exit 0; }
