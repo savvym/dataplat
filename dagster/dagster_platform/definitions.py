@@ -35,6 +35,9 @@
 #        run status change (STARTED/SUCCESS/FAILURE/CANCELED) and POSTs the event to
 #        POST /api/dagster/events on the FastAPI service. Uses the dagster/backfill
 #        tag (OQ-1 fix) to resolve the backfill ID stored in Run.dagster_run_id.
+# F-054: DoclingDocIOManager — atomic write of doc.docling.json + manifest.json +
+#        images/ to MinIO, then document_variant row to Postgres. extract_mineru now
+#        returns DoclingDocOutput routed through io_manager_key="docling_io".
 
 from typing import Any
 import os
@@ -50,7 +53,6 @@ from dagster import (
     DagsterRunStatus,
     DynamicPartitionsDefinition,
     EventLogEntry,
-    MaterializeResult,
     MetadataValue,
     RunStatusSensorContext,
     SensorEvaluationContext,
@@ -64,6 +66,7 @@ from dagster import (
 
 from dagster_platform.lance_io_manager import LanceChunksIOManager
 from dagster_platform.hf_dataset_io_manager import HFDatasetIOManager
+from dagster_platform.docling_io_manager import DoclingDocIOManager, DoclingDocOutput, SourceRef
 from dagster_platform.sft_synthesis_qa import (
     DatasetOutput,
     call_llm_gateway,
@@ -77,9 +80,8 @@ from dagster_platform.extractor import (
     build_docling_document,
     build_s3_client,
     estimate_page_count,
-    insert_document_variant,
+    fetch_source_sha256,
     read_pdf_bytes,
-    write_document_json,
 )
 
 from dagster_platform.chunker import (
@@ -121,24 +123,30 @@ source_asset = AssetSpec(key="source", partitions_def=sources_partitions)
 
 @asset(
     partitions_def=sources_partitions,
+    io_manager_key="docling_io",
     description=(
-        "MinerU extraction (F-019): reads PDF from MinIO, produces a minimal "
-        "schema-valid DoclingDocument JSON, writes to s3://documents/{source_id}/"
-        "extract_mineru/doc.docling.json, and inserts a document_variant row to Postgres."
+        "MinerU extraction (F-019 / F-054): reads PDF from MinIO, produces a minimal "
+        "schema-valid DoclingDocument JSON, returns DoclingDocOutput for "
+        "DoclingDocIOManager to write to s3://documents/{source_id}/"
+        "extract_mineru/{doc.docling.json,manifest.json} and insert a "
+        "document_variant row to Postgres."
     ),
 )
-def extract_mineru(context: AssetExecutionContext) -> MaterializeResult:
-    """Real extraction asset (F-019).
+def extract_mineru(context: AssetExecutionContext) -> DoclingDocOutput:
+    """MinerU extraction asset (F-019 body / F-054 IOManager refactor).
 
-    Steps (agreed.md §3):
+    Steps (agreed.md §4.1 / definitions.py §3.4):
       1. Parse source_id from partition key.
       2. Build boto3 S3 client from MINIO_* env.
       3. Read PDF bytes from s3://sources/{source_id}/original.pdf.
       4. Estimate page count (best-effort regex; 0 on failure).
       5. Build minimal valid DoclingDocument JSON (no DocumentOrigin/binary_hash).
-      6. Write JSON to s3://documents/{source_id}/extract_mineru/doc.docling.json.
-      7. Insert document_variant row (psycopg2, PLATFORM_DB_URL, ON CONFLICT DO NOTHING).
-      8. Return MaterializeResult with metadata.
+      6. Fetch source sha256 from Postgres (for manifest source_refs).
+      7. Construct and return DoclingDocOutput.
+
+    All MinIO writes + the Postgres insert happen in DoclingDocIOManager.handle_output()
+    AFTER this function returns (via Dagster io_manager_key dispatch).
+    write_document_json and insert_document_variant are no longer called here.
     """
     partition_key = context.partition_key
     source_id = int(partition_key.removeprefix("src_"))
@@ -165,26 +173,27 @@ def extract_mineru(context: AssetExecutionContext) -> MaterializeResult:
         "extract_mineru: built DoclingDocument JSON (%d bytes)", len(doc_json)
     )
 
-    write_document_json(s3, source_id, doc_json)
+    sha256 = fetch_source_sha256(source_id)
     context.log.info(
-        "extract_mineru: wrote doc.docling.json to documents/%d/extract_mineru/",
+        "extract_mineru: fetched source sha256=%s for source_id=%d",
+        sha256[:16] + "...",
         source_id,
     )
 
-    insert_document_variant(source_id, page_count, context.run_id)
-    context.log.info(
-        "extract_mineru: inserted document_variant row (run_id=%s)", context.run_id
-    )
-
-    return MaterializeResult(
-        metadata={
-            "source_id": MetadataValue.int(source_id),
-            "page_count": MetadataValue.int(page_count),
-            "bytes": MetadataValue.int(len(pdf_bytes)),
-            "storage_key": MetadataValue.text(
-                f"documents/{source_id}/extract_mineru/doc.docling.json"
-            ),
-        }
+    return DoclingDocOutput(
+        doc_json=doc_json,
+        images=[],  # MVP: no image extraction; IOManager handles N > 0 in future
+        source_refs=[
+            SourceRef(
+                bucket="sources",
+                key=f"sources/{source_id}/original.pdf",
+                sha256=sha256,
+            )
+        ],
+        source_id=source_id,
+        page_count=page_count,
+        extractor_name="mineru",
+        dagster_run_id=context.run_id,
     )
 
 
@@ -847,5 +856,6 @@ defs = Definitions(
     resources={
         "lance_chunks_io": LanceChunksIOManager(),
         "hf_dataset_io": HFDatasetIOManager(),
+        "docling_io": DoclingDocIOManager(),
     },
 )

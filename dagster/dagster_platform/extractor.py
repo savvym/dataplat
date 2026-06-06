@@ -143,6 +143,30 @@ def build_docling_document(
 # ---------------------------------------------------------------------------
 
 
+def fetch_source_sha256(source_id: int) -> str:
+    """Fetch the sha256 hex string for the given source_id from Postgres.
+
+    Uses raw psycopg2 (same pattern as insert_document_variant).
+    Executes SELECT sha256 FROM source WHERE id = %s.
+
+    Raises RuntimeError if the source row does not exist.
+    """
+    db_url = os.environ["PLATFORM_DB_URL"]
+    conn = psycopg2.connect(db_url)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT sha256 FROM source WHERE id = %s", (source_id,))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        raise RuntimeError(
+            f"fetch_source_sha256: no source row found for source_id={source_id}"
+        )
+    return row[0]
+
+
 def insert_document_variant(
     source_id: int,
     page_count: int,
