@@ -122,7 +122,8 @@ else:
     exists apps/web || { echo "no apps/web yet"; exit 0; }
     run "pnpm --filter web lint"
     run "pnpm --filter web typecheck"
-    run "pnpm --filter web test --run"
+    # F-055: pnpm v9 requires `run test` for arg passthrough (v8 used shorthand `test --run`)
+    run "pnpm --filter web run test -- --run"
     ;;
   contract)
     exists apps/api || { echo "no apps/api yet"; exit 0; }

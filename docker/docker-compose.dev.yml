@@ -327,12 +327,15 @@ services:
     restart: unless-stopped
 
   # ── 9. Frontend ───────────────────────────────────────────────────────────
-  # Port :5173 = frontend placeholder (nginx:1.27-alpine serving static HTML).
-  # NOT Dagster — Dagster is on :3000.
-  # Real frontend (React/Vite) is implemented in F-055.
+  # Port :15173 = React/Vite SPA (nginx:1.27-alpine serving built dist/).
+  # F-055: multi-stage build — Node 22 builds apps/web, nginx serves dist/.
+  # Build context is repo root (../) so Dockerfile can reach apps/web/.
   frontend:
     build:
-      context: ./web
+      context: ..
+      dockerfile: docker/web/Dockerfile
+      args:
+        VITE_API_BASE_URL: "${VITE_API_BASE_URL:-http://localhost:18000}"
     ports:
       - "${FRONTEND_HOST_PORT:-15173}:80"
     depends_on:

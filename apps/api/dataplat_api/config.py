@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     # Override via env var LLM_RATE_LIMIT_PER_MINUTE for tighter/looser limits.
     LLM_RATE_LIMIT_PER_MINUTE: int = 60
 
+    # Added S055-F-055: CORS allowed origins for the React/Vite frontend.
+    # Default allows the dev host port 15173 (docker-compose mapping 15173:80).
+    # Override via env var CORS_ORIGINS (JSON list) in non-dev environments.
+    CORS_ORIGINS: list[str] = ["http://localhost:15173"]
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 

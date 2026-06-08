@@ -9,6 +9,7 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI
 from sqlalchemy import text
+from starlette.middleware.cors import CORSMiddleware
 
 from dataplat_api.config import settings
 from dataplat_api.dagster.gateway import DagsterGateway
@@ -55,6 +56,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Dataplat API", version="0.1.0", lifespan=lifespan)
+
+# S055-F-055: CORS middleware — MUST be registered before all include_router() calls
+# (Starlette processes middleware in LIFO order; registering after routers risks
+# ordering bugs when additional middleware is added in future sprints).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+    allow_credentials=False,
+)
 
 app.include_router(health_router)
 app.include_router(admin_router)
