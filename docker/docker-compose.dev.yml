@@ -51,12 +51,27 @@ services:
     restart: unless-stopped
 
   # ── 2. Redis ─────────────────────────────────────────────────────────────
+  # S056-HF1 (security hotfix, 2026-06-09): close redis-unauth on host:16379.
+  #   1. Require a password via `--requirepass` (REDIS_PASSWORD env var).
+  #      The container refuses commands without AUTH; protected-mode is also
+  #      kept enabled (default).
+  #   2. Bind the host port to 127.0.0.1 only so the dev port is not reachable
+  #      from the LAN/internet. Service-to-service traffic still uses the
+  #      compose-internal network ("redis:6379") and is unaffected.
+  #   3. REDIS_URL now carries the password (redis://:PASSWORD@redis:6379/0)
+  #      so any future Python consumer (rq, fastapi cache, etc.) auths
+  #      automatically. The dev default is intentionally non-empty.
+  # In production, set REDIS_PASSWORD to a strong random value
+  # (openssl rand -hex 32) and override REDIS_URL accordingly.
   redis:
     image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-devredispassword}"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-devredispassword}
     ports:
-      - "${REDIS_HOST_PORT:-16379}:6379"
+      - "127.0.0.1:${REDIS_HOST_PORT:-16379}:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-devredispassword}", "--no-auth-warning", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
